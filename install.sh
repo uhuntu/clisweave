@@ -98,6 +98,12 @@ for name in ai ai-sessions; do
   link_or_launcher "$SCRIPT_DIR/bin/$name" "$BIN_DIR/$name"
 done
 
+if [[ -e "$BIN_DIR/cw" || -L "$BIN_DIR/cw" ]]; then
+  echo "Warning: $BIN_DIR/cw already exists; leaving it unchanged" >&2
+else
+  link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/cw"
+fi
+
 for alias_name in clisweave aim aimux; do
   link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/$alias_name"
 done

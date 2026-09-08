@@ -26,6 +26,7 @@ Repository = "https://github.com/uhuntu/clisweave"
 
 [project.scripts]
 ai = "clisweave.cli:main"
+cw = "clisweave.cli:main"
 aim = "clisweave.cli:main"
 clisweave = "clisweave.cli:main"
 aimux = "clisweave.cli:main"

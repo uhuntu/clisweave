@@ -87,6 +87,12 @@ function Write-Launcher($Name, $Target) {
 
 Write-Launcher "ai" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "ai-sessions" (Join-Path $ScriptDir "bin\ai-sessions")
+$CwPath = Join-Path $BinDir "cw.cmd"
+if (Test-Path $CwPath) {
+    Write-Warning "$CwPath already exists; leaving it unchanged"
+} else {
+    Write-Launcher "cw" (Join-Path $ScriptDir "bin\ai")
+}
 Write-Launcher "clisweave" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "aim" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "aimux" (Join-Path $ScriptDir "bin\ai")

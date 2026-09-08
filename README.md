@@ -10,7 +10,7 @@ No daemon, no config file, no build step — just a small Python package (`src/c
 
 ## Install
 
-**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `clisweave`, `ai-sessions`, plus the legacy `aim` and `aimux` aliases):
+**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `cw`, `clisweave`, `ai-sessions`, plus the legacy `aim` and `aimux` aliases):
 
 ```bash
 pip install clisweave
@@ -35,7 +35,7 @@ git clone https://github.com/uhuntu/clisweave.git
 cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
 ```
 
-Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
+Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `cw`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` with a warning if it already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
 Requires `claude`, `codex`, and/or `kimi` already installed and on `PATH` (only the ones you actually use need to be present).
 
