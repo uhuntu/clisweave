@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -38,9 +39,15 @@ def read_list_cache():
 
 
 def exec_or_die(argv):
-    """os.execvp, but with a clean message instead of a traceback if the
-    binary isn't on PATH."""
+    """Run a tool in the current terminal, with a clean missing-tool error.
+
+    On Windows, Python's exec emulation does not reliably preserve the console
+    state required by interactive Node/Bun CLIs.  Keep this process alive there
+    and let the child inherit its standard handles instead.
+    """
     try:
+        if os.name == "nt":
+            sys.exit(subprocess.call(argv))
         os.execvp(argv[0], argv)
     except FileNotFoundError:
         print(f"ai: '{argv[0]}' not found on PATH", file=sys.stderr)

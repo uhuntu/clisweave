@@ -802,6 +802,18 @@ def test_cmd_stats_unknown_option_exits(monkeypatch, tmp_path, capsys):
 
 # ---------- exec_or_die ----------
 
+def test_exec_or_die_windows_runs_child_and_propagates_status(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions.os, "name", "nt")
+    monkeypatch.setattr(sessions.subprocess, "call", lambda argv: calls.append(argv) or 7)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.exec_or_die(["kimi", "-S", "session_123"])
+
+    assert calls == [["kimi", "-S", "session_123"]]
+    assert exc_info.value.code == 7
+
+
 def test_exec_or_die_missing_binary_reports_cleanly(monkeypatch, capsys):
     def fake_execvp(*_a, **_kw):
         raise FileNotFoundError()
