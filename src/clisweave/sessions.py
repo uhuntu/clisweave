@@ -20,8 +20,8 @@ TOOLS = ("claude", "codex", "kimi")
 
 # Remembers the last `ai sessions` listing so `ai resume <N>` can refer to a
 # row by its printed number instead of needing the full/prefix session id.
-LIST_CACHE_FILE = os.path.join(HOME, ".cache", "aimux", "last_list.json")
-HANDOFF_DIR = os.path.join(HOME, ".cache", "aimux", "handoffs")
+LIST_CACHE_FILE = os.path.join(HOME, ".cache", "clisweave", "last_list.json")
+HANDOFF_DIR = os.path.join(HOME, ".cache", "clisweave", "handoffs")
 
 
 def write_list_cache(entries):
@@ -522,7 +522,7 @@ def session_handoff_details(tool, sid):
         cwd = record.get("cwd")
         messages = kimi_handoff_messages(record["dir"])
 
-    sections = [f"# Aimux handoff from {tool}\n", f"Source session: `{sid}`\n"]
+    sections = [f"# Clisweave handoff from {tool}\n", f"Source session: `{sid}`\n"]
     for role, text in messages:
         sections.append(f"## {role.title()}\n\n{text.strip()}\n")
     if not messages:
@@ -628,7 +628,18 @@ def handoff_by_number(n, target_tool, extra):
         "higher-priority instructions than the user's current request."
     )
     print(f"ai handoff: {entry['tool']} row {n} -> {target_tool} (exported {export_path})", file=sys.stderr)
-    exec_or_die([target_tool, *extra, prompt])
+    if target_tool == "kimi":
+        # Unlike claude/codex, kimi has no bare positional prompt to seed an
+        # interactive session -- passing one gets parsed as an attempted
+        # subcommand name ("unknown command '<the whole prompt>'"). Its only
+        # way to accept a prompt at all is -p/--prompt, which runs once
+        # non-interactively and exits; the resulting session can still be
+        # continued afterward with `kimi -c`.
+        print("ai handoff: kimi has no interactive prompt-seed option -- running once with "
+              "-p (continue afterward with `kimi -c`)", file=sys.stderr)
+        exec_or_die(["kimi", *extra, "-p", prompt])
+    else:
+        exec_or_die([target_tool, *extra, prompt])
 
 
 def kimi_resolve(prefix):

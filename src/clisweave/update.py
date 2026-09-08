@@ -1,4 +1,4 @@
-"""ai update - update aimux itself, and optionally the underlying
+"""ai update - update clisweave itself, and optionally the underlying
 claude/codex/kimi CLIs, which each ship their own self-update command."""
 import os
 import shutil
@@ -37,7 +37,7 @@ TOOL_UPDATE_HINTS = {
 
 
 def detect_repo_dir(package_dir):
-    """If aimux was installed by symlinking into a git clone (the curl or
+    """If clisweave was installed by symlinking into a git clone (the curl or
     git install path), return that clone's root so it can be `git pull`ed.
     Returns None for a pip install, where the package lives under
     site-packages with no .git anywhere nearby."""
@@ -48,7 +48,7 @@ def detect_repo_dir(package_dir):
 
 
 def update_self():
-    """Update the aimux install itself. Returns a process-style exit code."""
+    """Update the clisweave install itself. Returns a process-style exit code."""
     package_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = detect_repo_dir(package_dir)
 
@@ -56,8 +56,8 @@ def update_self():
         print(f"Updating git install at {repo_dir} ...", flush=True)
         result = subprocess.run(["git", "-C", repo_dir, "pull", "--ff-only"])
     else:
-        print("Updating pip install of aimux-cli ...", flush=True)
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "aimux-cli"])
+        print("Updating pip install of clisweave ...", flush=True)
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "clisweave"])
 
     return result.returncode
 

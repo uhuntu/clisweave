@@ -1,12 +1,12 @@
 import pytest
 
-from aimux import update
+from clisweave import update
 
 
 def test_detect_repo_dir_finds_git_root(tmp_path):
-    repo = tmp_path / "aimux"
+    repo = tmp_path / "clisweave"
     (repo / ".git").mkdir(parents=True)
-    package_dir = repo / "src" / "aimux"
+    package_dir = repo / "src" / "clisweave"
     package_dir.mkdir(parents=True)
 
     assert update.detect_repo_dir(str(package_dir)) == str(repo)
@@ -14,7 +14,7 @@ def test_detect_repo_dir_finds_git_root(tmp_path):
 
 def test_detect_repo_dir_none_for_pip_install(tmp_path):
     # No .git two levels up -- looks like a site-packages install.
-    package_dir = tmp_path / "site-packages" / "aimux"
+    package_dir = tmp_path / "site-packages" / "clisweave"
     package_dir.mkdir(parents=True)
 
     assert update.detect_repo_dir(str(package_dir)) is None
@@ -61,7 +61,7 @@ def test_cmd_update_pip_install_runs_pip_upgrade(monkeypatch, capsys):
         update.cmd_update([])
 
     assert exc_info.value.code == 0
-    assert calls == [["/fake/python", "-m", "pip", "install", "--upgrade", "aimux-cli"]]
+    assert calls == [["/fake/python", "-m", "pip", "install", "--upgrade", "clisweave"]]
     assert "Updating pip install" in capsys.readouterr().out
 
 

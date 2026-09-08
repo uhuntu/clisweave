@@ -1,6 +1,6 @@
 import pytest
 
-from aimux.cli import UsageError, build_command
+from clisweave.cli import UsageError, build_command
 
 
 def test_claude_all_flags():

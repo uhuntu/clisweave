@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aimux-cli"
+name = "clisweave"
 version = "0.1.2"
 description = "Unified CLI wrapper + cross-tool session manager for Claude Code, Codex CLI, and Kimi CLI"
 readme = "README.md"
@@ -21,14 +21,15 @@ classifiers = [
 test = ["pytest"]
 
 [project.urls]
-Homepage = "https://github.com/uhuntu/aimux"
-Repository = "https://github.com/uhuntu/aimux"
+Homepage = "https://github.com/uhuntu/clisweave"
+Repository = "https://github.com/uhuntu/clisweave"
 
 [project.scripts]
-ai = "aimux.cli:main"
-aim = "aimux.cli:main"
-aimux = "aimux.cli:main"
-ai-sessions = "aimux.sessions:main"
+ai = "clisweave.cli:main"
+aim = "clisweave.cli:main"
+clisweave = "clisweave.cli:main"
+aimux = "clisweave.cli:main"
+ai-sessions = "clisweave.sessions:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

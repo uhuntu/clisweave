@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from aimux import search, sessions
+from clisweave import search, sessions
 
 
 def test_judge_calls_dont_persist_a_visible_session():

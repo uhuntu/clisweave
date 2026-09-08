@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Symlinks aimux's commands (ai, ai-sessions, plus optional short aliases)
+# Symlinks Clisweave's commands (ai, ai-sessions, plus optional aliases)
 # into a directory on your PATH.
 #
 # Run after cloning:
 #   ./install.sh
 #
 # Or as a one-liner, which clones the repo first:
-#   curl -fsSL https://raw.githubusercontent.com/uhuntu/aimux/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/uhuntu/clisweave/master/install.sh | bash
 set -euo pipefail
 
 # On Git-for-Windows/MSYS, `ln -sf` defaults to copying instead of creating a
@@ -16,8 +16,8 @@ set -euo pipefail
 # elsewhere.
 export MSYS="${MSYS:-}${MSYS:+ }winsymlinks:nativestrict"
 
-REPO_URL="https://github.com/uhuntu/aimux.git"
-BIN_DIR="${AIMUX_BIN_DIR:-$HOME/.local/bin}"
+REPO_URL="https://github.com/uhuntu/clisweave.git"
+BIN_DIR="${CLISWEAVE_BIN_DIR:-${AIMUX_BIN_DIR:-$HOME/.local/bin}}"
 
 # When piped via `curl | bash`, there's no script file, so BASH_SOURCE[0] is
 # unset (not just non-matching) -- guard the lookup instead of dereferencing
@@ -27,7 +27,7 @@ if [[ -n "$SOURCE_PATH" && -f "$(dirname "$SOURCE_PATH")/bin/ai" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$SOURCE_PATH")" && pwd)"
 else
   # Not running from inside a clone -- fetch one first, then re-run from there.
-  REPO_DIR="${AIMUX_REPO_DIR:-$HOME/.local/share/aimux}"
+  REPO_DIR="${CLISWEAVE_REPO_DIR:-${AIMUX_REPO_DIR:-$HOME/.local/share/clisweave}}"
   if [[ -d "$REPO_DIR/.git" ]]; then
     git -C "$REPO_DIR" pull --ff-only
   else
@@ -98,7 +98,7 @@ for name in ai ai-sessions; do
   link_or_launcher "$SCRIPT_DIR/bin/$name" "$BIN_DIR/$name"
 done
 
-for alias_name in aim aimux; do
+for alias_name in clisweave aim aimux; do
   link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/$alias_name"
 done
 

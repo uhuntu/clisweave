@@ -1,67 +1,67 @@
-# aimux
+# clisweave
 
-[![test](https://github.com/uhuntu/aimux/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/aimux/actions/workflows/test.yml)
+[![test](https://github.com/uhuntu/clisweave/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/clisweave/actions/workflows/test.yml)
 
-A tiny, dependency-free wrapper that unifies three AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), and [Kimi CLI](https://www.kimi-cli.com/) — behind one set of flags, plus a cross-tool session list and resume.
+A tiny, dependency-free wrapper that weaves three AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), and [Kimi CLI](https://www.kimi-cli.com/) — behind one set of flags, plus cross-tool session discovery, resume, and handoff.
 
-No daemon, no config file, no build step — just a small Python package (`src/aimux/`) that reads each tool's own on-disk session store directly.
+No daemon, no config file, no build step — just a small Python package (`src/clisweave/`) that reads each tool's own on-disk session store directly.
 
-![aimux demo: a unified session list across claude/codex/kimi, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
+![clisweave demo: a unified session list across claude/codex/kimi, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
 
 ## Install
 
-**Via pip** (the package is named `aimux-cli` on PyPI; the commands installed are `ai`, `aim`, `aimux`, `ai-sessions`):
+**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `clisweave`, `ai-sessions`, plus the legacy `aim` and `aimux` aliases):
 
 ```bash
-pip install aimux-cli
+pip install clisweave
 ```
 
 **Via curl** (macOS/Linux, or Windows with Git Bash/WSL), one line, no manual clone:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/uhuntu/aimux/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/uhuntu/clisweave/master/install.sh | bash
 ```
 
 **Via irm** (Windows PowerShell, no Git Bash/WSL/Cygwin needed):
 
 ```powershell
-irm https://raw.githubusercontent.com/uhuntu/aimux/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/uhuntu/clisweave/master/install.ps1 | iex
 ```
 
 **Via git**, if you'd rather clone it yourself first:
 
 ```bash
-git clone https://github.com/uhuntu/aimux.git
-cd aimux && ./install.sh        # Windows PowerShell: .\install.ps1
+git clone https://github.com/uhuntu/clisweave.git
+cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
 ```
 
-Whichever of the last three you use, it clones the repo to `~/.local/share/aimux` first (override with `AIMUX_REPO_DIR`), then wires up `ai`, `ai-sessions`, and the `aim`/`aimux` aliases in `~/.local/bin` (override with `AIMUX_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. Nothing is copied — the clone stays the source of truth.
+Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
 Requires `claude`, `codex`, and/or `kimi` already installed and on `PATH` (only the ones you actually use need to be present).
 
 > **Windows note:** running the curl one-liner from PowerShell/cmd (rather than Git Bash) can invoke the WSL `bash` launcher by mistake instead of Git's — use `irm` above, or run curl from Git Bash directly. `install.sh` also copes if Git Bash lacks symlink privilege (falls back to a generated launcher instead of a broken copy) or `python3` on `PATH` is the Microsoft Store's no-op stub (probes `python`/`py -3` instead). Files installed by `install.sh` are still extensionless with a shebang line, though, which PowerShell can't execute directly — `install.ps1`'s `.cmd` launchers don't have that problem. If you stick with `install.sh`, call `ai` from Git Bash instead, or add a function to your PowerShell `$PROFILE`:
 > ```powershell
-> function ai { & "C:\Path\To\python.exe" "$HOME\.local\share\aimux\bin\ai" @args }
+> function ai { & "C:\Path\To\python.exe" "$HOME\.local\share\clisweave\bin\ai" @args }
 > ```
 
 
 ## Update
 
 ```bash
-ai update        # update aimux itself
+ai update        # update clisweave itself
 ai update tools  # update claude, codex, and kimi (whichever are installed)
 ai update all    # both
 ```
 
-`ai update` detects how aimux itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade aimux-cli` for a pip install.
+`ai update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
 
 `ai update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
 
-Equivalent manual commands for updating aimux itself, if you'd rather:
+Equivalent manual commands for updating clisweave itself, if you'd rather:
 
-- **pip**: `pip install --upgrade aimux-cli`
+- **pip**: `pip install --upgrade clisweave`
 - **curl**: re-run the same one-liner — it fast-forwards the existing clone before relinking
-- **git**: `git -C /path/to/aimux pull` — the symlinks point straight into the repo, so this alone is enough
+- **git**: `git -C /path/to/clisweave pull` — the symlinks point straight into the repo, so this alone is enough
 
 ## Usage
 
@@ -93,7 +93,7 @@ ai stats --tool claude      # stats for one tool only
 
 Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
 
-To switch agents, put the target tool after the row number: `ai 3 codex`. Aimux exports the complete textual conversation to `~/.cache/aimux/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session.
+To switch agents, put the target tool after the row number: `ai 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session.
 
 ### How `ai search` works
 

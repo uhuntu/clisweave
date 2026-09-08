@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from aimux import sessions
+from clisweave import sessions
 
 
 @pytest.fixture(autouse=True)
@@ -725,6 +725,31 @@ def test_handoff_by_number_starts_target_in_source_cwd(monkeypatch, tmp_path, ca
     assert str(export_path) in calls[0][-1]
     assert "complete conversation export" in calls[0][-1]
     assert "kimi row 1 -> codex" in capsys.readouterr().err
+
+
+def test_handoff_by_number_to_kimi_uses_print_mode(monkeypatch, tmp_path, capsys):
+    """Regression test: kimi has no bare positional prompt to seed an
+    interactive session -- unlike claude/codex, passing one gets parsed as
+    an attempted subcommand ("unknown command '<the whole prompt>'"). Its
+    only way to accept a prompt at all is -p/--prompt."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "kimi", [])
+
+    assert calls[0][0] == "kimi"
+    assert calls[0][1] == "-p"
+    assert "complete conversation export" in calls[0][2]
+    assert "no interactive prompt-seed option" in capsys.readouterr().err
 
 
 def test_claude_handoff_exports_every_text_message(monkeypatch, tmp_path):

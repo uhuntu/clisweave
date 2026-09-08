@@ -42,7 +42,7 @@ Examples:
   ai resume kimi 97946bc7
   ai resume 3         # resume row 3 from the last `ai`/`ai sessions` listing
   ai 3 codex          # continue row 3 in a new Codex session with context
-  ai update           # update aimux itself
+  ai update           # update clisweave itself
   ai update tools     # update claude, codex, and kimi (whichever are installed)
   ai update all       # both of the above
   ai search "the nfc frequency lock issue"   # asks claude to find relevant sessions
@@ -151,7 +151,7 @@ def main():
         print(USAGE)
         return
     if argv and argv[0] in ("-v", "--version"):
-        print(f"aimux {__version__}")
+        print(f"clisweave {__version__}")
         return
 
     if not argv:
