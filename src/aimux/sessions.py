@@ -47,7 +47,13 @@ def exec_or_die(argv):
     """
     try:
         if os.name == "nt":
-            sys.exit(subprocess.call(argv))
+            try:
+                sys.exit(subprocess.call(argv))
+            except KeyboardInterrupt:
+                # Ctrl+C is delivered to both the interactive child and this
+                # waiting wrapper.  The child already handles it; do not leak
+                # the wrapper's Python traceback after its UI closes.
+                sys.exit(130)
         os.execvp(argv[0], argv)
     except FileNotFoundError:
         print(f"ai: '{argv[0]}' not found on PATH", file=sys.stderr)
