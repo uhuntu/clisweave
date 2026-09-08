@@ -81,6 +81,7 @@ ai sessions --all           # include archived sessions
 ai resume kimi 97946bc7     # resume by short id / prefix (resolved against real session ids)
 ai resume claude            # no id -> tool's own interactive picker
 ai resume 3                 # resume row 3 from the last `ai`/`ai sessions` listing
+ai 3 codex                  # hand row 3's context to a new Codex session
 
 ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
 ai search "katago" --tool claude           # restrict the candidates to one tool
@@ -91,6 +92,8 @@ ai stats --tool claude      # stats for one tool only
 ```
 
 Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
+
+To switch agents, put the target tool after the row number: `ai 3 codex`. Aimux exports the complete textual conversation to `~/.cache/aimux/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session.
 
 ### How `ai search` works
 

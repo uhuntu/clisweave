@@ -11,6 +11,7 @@ USAGE = """Usage: ai <claude|codex|kimi> [common-options] [prompt] [-- extra nat
        ai full [--tool T] [--cwd] [--all]
        ai search <topic> [--tool T] [--judge claude|codex|kimi]
        ai resume <claude|codex|kimi|N> [session-id-or-prefix]
+       ai <N> <claude|codex|kimi> [native-options]
        ai update [tools|all]
        ai stats [--tool T]
 
@@ -40,6 +41,7 @@ Examples:
   ai full                   # everything, no default 15-row cutoff
   ai resume kimi 97946bc7
   ai resume 3         # resume row 3 from the last `ai`/`ai sessions` listing
+  ai 3 codex          # continue row 3 in a new Codex session with context
   ai update           # update aimux itself
   ai update tools     # update claude, codex, and kimi (whichever are installed)
   ai update all       # both of the above

@@ -676,6 +676,80 @@ def test_resume_by_number_dispatches_correct_session(monkeypatch, tmp_path):
     assert calls == [["kimi", "-S", "session_bbbb", "-p", "hi"]]
 
 
+def test_resume_by_number_hands_session_to_different_tool(monkeypatch, tmp_path):
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "kimi", "id": "session_bbbb"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    calls = []
+    monkeypatch.setattr(
+        sessions, "handoff_by_number",
+        lambda n, target, extra: calls.append((n, target, extra)),
+    )
+
+    sessions.resume_by_number(1, ["codex", "-m", "gpt-5"])
+
+    assert calls == [(1, "codex", ["-m", "gpt-5"])]
+
+
+def test_resume_by_number_same_tool_resumes_without_redundant_arg(monkeypatch, tmp_path):
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "cccc"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.resume_by_number(1, ["codex"])
+
+    assert calls == [["codex", "resume", "cccc"]]
+
+
+def test_handoff_by_number_starts_target_in_source_cwd(monkeypatch, tmp_path, capsys):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "kimi", "id": "session_bbbb"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "codex", ["-m", "gpt-5"])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(source_dir)
+    assert calls[0][:3] == ["codex", "-m", "gpt-5"]
+    export_path = tmp_path / "handoffs" / "kimi-session_bbbb.md"
+    assert export_path.read_text() == "# Full conversation\nimportant end"
+    assert str(export_path) in calls[0][-1]
+    assert "complete conversation export" in calls[0][-1]
+    assert "kimi row 1 -> codex" in capsys.readouterr().err
+
+
+def test_claude_handoff_exports_every_text_message(monkeypatch, tmp_path):
+    transcript = tmp_path / "claude.jsonl"
+    transcript.write_text("\n".join(
+        json.dumps({
+            "type": "user" if i % 2 == 0 else "assistant",
+            "message": {"content": [{"type": "text", "text": f"message {i}"}]},
+            "cwd": str(tmp_path),
+        })
+        for i in range(75)
+    ) + "\n")
+    monkeypatch.setattr(sessions, "claude_light_records", lambda: [{
+        "tool": "claude", "id": "claude-full", "path": str(transcript), "cwd": str(tmp_path),
+    }])
+
+    cwd, exported = sessions.session_handoff_details("claude", "claude-full")
+
+    assert cwd == str(tmp_path)
+    assert exported.count("## User") == 38
+    assert exported.count("## Assistant") == 37
+    assert "message 0" in exported
+    assert "message 74" in exported
+
+
 def test_resume_by_number_out_of_range(tmp_path, monkeypatch, capsys):
     cache_file = tmp_path / "last_list.json"
     cache_file.write_text(json.dumps([{"tool": "claude", "id": "aaaa"}]))
