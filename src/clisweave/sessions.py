@@ -220,6 +220,14 @@ def claude_title_and_cwd(path, cwd_fallback):
     return title, (cwd or cwd_fallback)
 
 
+def claude_session_cwd(sid):
+    record = next((r for r in claude_light_records() if r["id"] == sid), None)
+    if not record:
+        return None
+    _title, cwd = claude_title_and_cwd(record["path"], record.get("cwd"))
+    return cwd
+
+
 def claude_resolve(prefix):
     matches = []
     for r in claude_light_records():
@@ -877,15 +885,17 @@ def cmd_resume(args):
             print(f"  {m}", file=sys.stderr)
         sys.exit(1)
 
+    cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd}[tool]
+    target_cwd = cwd_getter(full_id)
+    if target_cwd and os.path.isdir(target_cwd) and os.path.realpath(target_cwd) != os.path.realpath(os.getcwd()):
+        print(f"ai resume: this {tool} session was created in {target_cwd}, switching there first", file=sys.stderr)
+        os.chdir(target_cwd)
+
     if tool == "claude":
         exec_or_die(["claude", "--resume", full_id, *extra])
     elif tool == "codex":
         exec_or_die(["codex", "resume", full_id, *extra])
     else:
-        target_cwd = kimi_session_cwd(full_id)
-        if target_cwd and os.path.isdir(target_cwd) and os.path.realpath(target_cwd) != os.path.realpath(os.getcwd()):
-            print(f"ai resume: this kimi session was created in {target_cwd}, switching there first", file=sys.stderr)
-            os.chdir(target_cwd)
         exec_or_die(["kimi", "-S", full_id, *extra])
 
 

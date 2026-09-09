@@ -633,6 +633,51 @@ def test_cmd_resume_kimi_skips_chdir_when_already_in_workdir(monkeypatch, tmp_pa
     assert "switching there first" not in capsys.readouterr().err
 
 
+def test_cmd_resume_claude_chdirs_into_session_cwd_first(monkeypatch, tmp_path, capsys):
+    other_dir = tmp_path / "other-project"
+    other_dir.mkdir()
+
+    projects = tmp_path / "projects"
+    project_dir = projects / "-some-project"
+    project_dir.mkdir(parents=True)
+    sid = "cd385445-cec2-43c6-9919-69e87818d2dc"
+    (project_dir / f"{sid}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(other_dir), "message": {"content": "hi"}}) + "\n"
+    )
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.chdir(tmp_path)
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    sessions.cmd_resume(["claude", sid])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(other_dir))
+    assert exec_calls == [["claude", "--resume", sid]]
+    assert "switching there first" in capsys.readouterr().err
+
+
+def test_cmd_resume_codex_chdirs_into_session_cwd_first(monkeypatch, tmp_path, capsys):
+    other_dir = tmp_path / "other-project"
+    other_dir.mkdir()
+
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    write_codex_rollout(codex_home, sid, cwd=str(other_dir))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+    monkeypatch.chdir(tmp_path)
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    sessions.cmd_resume(["codex", sid])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(other_dir))
+    assert exec_calls == [["codex", "resume", sid]]
+    assert "switching there first" in capsys.readouterr().err
+
+
 # ---------- list cache / resume by number ----------
 
 def test_cmd_list_writes_numbered_cache(monkeypatch, tmp_path, capsys):

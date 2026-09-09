@@ -123,7 +123,7 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 
 Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing.
 
-`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each kimi session's original directory already (it's the CWD column), so they `cd` there automatically before resuming instead of surfacing that error.
+`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all three tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
 ## Development
 
