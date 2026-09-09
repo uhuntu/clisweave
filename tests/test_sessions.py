@@ -678,6 +678,65 @@ def test_cmd_resume_codex_chdirs_into_session_cwd_first(monkeypatch, tmp_path, c
     assert "switching there first" in capsys.readouterr().err
 
 
+def test_cmd_resume_cwd_override_wins_over_session_original_dir(monkeypatch, tmp_path, capsys):
+    """--cwd forces a directory even when it differs from the session's
+    own recorded cwd (e.g. resuming a claude session into an unrelated
+    project on purpose)."""
+    session_original_dir = tmp_path / "original-project"
+    session_original_dir.mkdir()
+    forced_dir = tmp_path / "wrong-question-book"
+    forced_dir.mkdir()
+
+    projects = tmp_path / "projects"
+    project_dir = projects / "-some-project"
+    project_dir.mkdir(parents=True)
+    sid = "cd385445-cec2-43c6-9919-69e87818d2dc"
+    (project_dir / f"{sid}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(session_original_dir), "message": {"content": "hi"}}) + "\n"
+    )
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.chdir(tmp_path)
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    sessions.cmd_resume(["claude", sid, "--cwd", str(forced_dir)])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
+    assert exec_calls == [["claude", "--resume", sid]]
+    err = capsys.readouterr().err
+    assert "forcing cwd" in err
+    assert "switching there first" not in err
+
+
+def test_cmd_resume_cwd_override_rejects_non_directory(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
+    monkeypatch.setattr(sessions, "claude_resolve", lambda prefix: [prefix])
+
+    with pytest.raises(SystemExit):
+        sessions.cmd_resume(["claude", "some-id", "--cwd", str(tmp_path / "does-not-exist")])
+
+    assert "is not a directory" in capsys.readouterr().err
+
+
+def test_cmd_resume_cwd_override_flows_through_resume_by_number(monkeypatch, tmp_path, capsys):
+    forced_dir = tmp_path / "wrong-question-book"
+    forced_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(sessions, "read_list_cache", lambda: [{"tool": "codex", "id": "abc123"}])
+    monkeypatch.setattr(sessions, "codex_resolve", lambda prefix: ["abc123"])
+    monkeypatch.setattr(sessions, "codex_cwd", lambda sid: str(tmp_path / "unrelated"))
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    sessions.cmd_resume(["1", "--cwd", str(forced_dir)])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
+    assert exec_calls == [["codex", "resume", "abc123"]]
+
+
 # ---------- list cache / resume by number ----------
 
 def test_cmd_list_writes_numbered_cache(monkeypatch, tmp_path, capsys):
@@ -840,11 +899,11 @@ def test_resume_by_number_no_cache(tmp_path, monkeypatch, capsys):
 
 def test_cmd_resume_routes_numeric_arg_to_resume_by_number(monkeypatch):
     calls = []
-    monkeypatch.setattr(sessions, "resume_by_number", lambda n, extra: calls.append((n, extra)))
+    monkeypatch.setattr(sessions, "resume_by_number", lambda n, extra, forced_cwd=None: calls.append((n, extra, forced_cwd)))
 
     sessions.cmd_resume(["3", "-p", "hi"])
 
-    assert calls == [(3, ["-p", "hi"])]
+    assert calls == [(3, ["-p", "hi"], None)]
 
 
 # ---------- cmd_list argument validation ----------

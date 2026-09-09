@@ -833,7 +833,27 @@ def render_rows(rows):
         print(f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  {title}")
 
 
-def resume_by_number(n, extra):
+def extract_cwd_override(args):
+    """Pull a --cwd <dir> option out of args, wherever it appears (it's not
+    forwarded to the underlying tool). Returns (remaining_args, forced_cwd)."""
+    out = []
+    forced_cwd = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--cwd":
+            if i + 1 >= len(args):
+                print("ai resume: --cwd requires a directory argument", file=sys.stderr)
+                sys.exit(1)
+            forced_cwd = args[i + 1]
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    return out, forced_cwd
+
+
+def resume_by_number(n, extra, forced_cwd=None):
     cache = read_list_cache()
     if not cache:
         print("ai resume: no session list cached yet -- run `ai sessions` first", file=sys.stderr)
@@ -848,16 +868,19 @@ def resume_by_number(n, extra):
             handoff_by_number(n, target_tool, extra[1:])
             return
         extra = extra[1:]
-    cmd_resume([entry["tool"], entry["id"], *extra])
+    cwd_args = ["--cwd", forced_cwd] if forced_cwd else []
+    cmd_resume([entry["tool"], entry["id"], *extra, *cwd_args])
 
 
 def cmd_resume(args):
+    args, forced_cwd = extract_cwd_override(args)
+
     if args and args[0].isdigit():
-        resume_by_number(int(args[0]), args[1:])
+        resume_by_number(int(args[0]), args[1:], forced_cwd)
         return
 
     if not args or args[0] not in TOOLS:
-        print(f"Usage: ai resume <{'|'.join(TOOLS)}|N> [session-id-or-prefix]", file=sys.stderr)
+        print(f"Usage: ai resume <{'|'.join(TOOLS)}|N> [session-id-or-prefix] [--cwd <dir>]", file=sys.stderr)
         sys.exit(1)
     tool = args[0]
     rest = args[1:]
@@ -885,11 +908,19 @@ def cmd_resume(args):
             print(f"  {m}", file=sys.stderr)
         sys.exit(1)
 
-    cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd}[tool]
-    target_cwd = cwd_getter(full_id)
-    if target_cwd and os.path.isdir(target_cwd) and os.path.realpath(target_cwd) != os.path.realpath(os.getcwd()):
-        print(f"ai resume: this {tool} session was created in {target_cwd}, switching there first", file=sys.stderr)
-        os.chdir(target_cwd)
+    if forced_cwd:
+        if not os.path.isdir(forced_cwd):
+            print(f"ai resume: --cwd '{forced_cwd}' is not a directory", file=sys.stderr)
+            sys.exit(1)
+        if os.path.realpath(forced_cwd) != os.path.realpath(os.getcwd()):
+            print(f"ai resume: forcing cwd to {forced_cwd}", file=sys.stderr)
+            os.chdir(forced_cwd)
+    else:
+        cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd}[tool]
+        target_cwd = cwd_getter(full_id)
+        if target_cwd and os.path.isdir(target_cwd) and os.path.realpath(target_cwd) != os.path.realpath(os.getcwd()):
+            print(f"ai resume: this {tool} session was created in {target_cwd}, switching there first", file=sys.stderr)
+            os.chdir(target_cwd)
 
     if tool == "claude":
         exec_or_die(["claude", "--resume", full_id, *extra])

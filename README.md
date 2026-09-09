@@ -125,6 +125,8 @@ Titles are best-effort (scanned from the first user message / prompt in each ses
 
 `kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all three tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
+Pass `--cwd <dir>` to override that and force a different directory instead, e.g. `ai resume 2 --cwd /path/to/other-project` resumes row 2's session but starts it in `/path/to/other-project` regardless of where it originally ran.
+
 ## Development
 
 ```bash
