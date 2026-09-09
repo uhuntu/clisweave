@@ -127,6 +127,8 @@ Titles are best-effort (scanned from the first user message / prompt in each ses
 
 Pass `--cwd <dir>` to override that and force a different directory instead, e.g. `ai resume 2 --cwd /path/to/other-project` resumes row 2's session but starts it in `/path/to/other-project` regardless of where it originally ran.
 
+A tool's own session log records only where a session first started and can't be edited after the fact, so the override is remembered separately in `~/.cache/clisweave/cwd_overrides.json`. Once you've resumed a session with `--cwd` once, later plain `ai resume`/`ai <N>` calls for that same session reuse the pinned directory automatically, and `ai sessions` shows it in the CWD column instead of the session's original directory.
+
 ## Development
 
 ```bash

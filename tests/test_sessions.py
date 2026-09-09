@@ -17,6 +17,12 @@ def _reset_codex_path_cache():
     sessions._codex_path_index = None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd_overrides_file(monkeypatch, tmp_path):
+    # Never let a test read or write the real user's cwd_overrides.json.
+    monkeypatch.setattr(sessions, "CWD_OVERRIDES_FILE", str(tmp_path / "cwd_overrides.json"))
+
+
 def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None):
     """Create a minimal codex rollout file, the actual on-disk source of
     truth codex_light_records() now scans directly (session_index.jsonl is
@@ -735,6 +741,42 @@ def test_cmd_resume_cwd_override_flows_through_resume_by_number(monkeypatch, tmp
 
     assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
     assert exec_calls == [["codex", "resume", "abc123"]]
+
+
+def test_cmd_resume_cwd_override_persists_and_is_reused_without_flag(monkeypatch, tmp_path, capsys):
+    """--cwd should stick: a later plain `ai resume` (no --cwd) for the same
+    session auto-switches to the pinned directory, and `ai sessions` shows
+    it instead of the tool's own recorded cwd."""
+    session_original_dir = tmp_path / "original-project"
+    session_original_dir.mkdir()
+    forced_dir = tmp_path / "wrong-question-book"
+    forced_dir.mkdir()
+    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    write_codex_rollout(codex_home, sid, cwd=str(session_original_dir))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    monkeypatch.chdir(tmp_path)
+    sessions.cmd_resume(["codex", sid, "--cwd", str(forced_dir)])
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
+
+    # listing now shows the pinned dir, not the session's original one
+    recs = sessions.codex_light_records()
+    row = sessions.resolve_row(recs[0])
+    assert row[4] == str(forced_dir)
+
+    # a later plain resume (back in some other dir, no --cwd) follows the pin
+    monkeypatch.chdir(session_original_dir)
+    sessions.cmd_resume(["codex", sid])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
+    assert exec_calls == [["codex", "resume", sid]] * 2
+    assert "was pinned to" in capsys.readouterr().err
 
 
 # ---------- list cache / resume by number ----------

@@ -23,6 +23,12 @@ TOOLS = ("claude", "codex", "kimi")
 LIST_CACHE_FILE = os.path.join(HOME, ".cache", "clisweave", "last_list.json")
 HANDOFF_DIR = os.path.join(HOME, ".cache", "clisweave", "handoffs")
 
+# A session's "real" cwd, as far as the underlying tool is concerned, is
+# whatever it first recorded and can't be edited after the fact. `ai resume
+# --cwd` needs somewhere durable of our own to remember a user's override so
+# later listings and resumes see it too.
+CWD_OVERRIDES_FILE = os.path.join(HOME, ".cache", "clisweave", "cwd_overrides.json")
+
 
 def write_list_cache(entries):
     """entries: list of {"tool": ..., "id": ...} in printed order."""
@@ -32,6 +38,26 @@ def write_list_cache(entries):
             json.dump(entries, fh)
     except OSError:
         pass  # best-effort -- resume-by-number just won't work this time
+
+
+def read_cwd_overrides():
+    data = read_json(CWD_OVERRIDES_FILE)
+    return data if isinstance(data, dict) else {}
+
+
+def get_cwd_override(tool, sid):
+    return read_cwd_overrides().get(f"{tool}:{sid}")
+
+
+def set_cwd_override(tool, sid, cwd):
+    overrides = read_cwd_overrides()
+    overrides[f"{tool}:{sid}"] = cwd
+    try:
+        os.makedirs(os.path.dirname(CWD_OVERRIDES_FILE), exist_ok=True)
+        with open(CWD_OVERRIDES_FILE, "w", encoding="utf-8") as fh:
+            json.dump(overrides, fh)
+    except OSError:
+        pass  # best-effort -- the override just won't stick this time
 
 
 def read_list_cache():
@@ -808,6 +834,7 @@ def resolve_row(r):
     else:
         title = kimi_title(r["dir"])
         cwd_show = r.get("cwd") or "?"
+    cwd_show = get_cwd_override(tool, r["id"]) or cwd_show
     return (tool, r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
 
@@ -912,14 +939,17 @@ def cmd_resume(args):
         if not os.path.isdir(forced_cwd):
             print(f"ai resume: --cwd '{forced_cwd}' is not a directory", file=sys.stderr)
             sys.exit(1)
+        set_cwd_override(tool, full_id, forced_cwd)
         if os.path.realpath(forced_cwd) != os.path.realpath(os.getcwd()):
-            print(f"ai resume: forcing cwd to {forced_cwd}", file=sys.stderr)
+            print(f"ai resume: forcing cwd to {forced_cwd} (remembered for next time)", file=sys.stderr)
             os.chdir(forced_cwd)
     else:
+        override_cwd = get_cwd_override(tool, full_id)
         cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd}[tool]
-        target_cwd = cwd_getter(full_id)
+        target_cwd = override_cwd or cwd_getter(full_id)
         if target_cwd and os.path.isdir(target_cwd) and os.path.realpath(target_cwd) != os.path.realpath(os.getcwd()):
-            print(f"ai resume: this {tool} session was created in {target_cwd}, switching there first", file=sys.stderr)
+            reason = "was pinned to" if override_cwd else "was created in"
+            print(f"ai resume: this {tool} session {reason} {target_cwd}, switching there first", file=sys.stderr)
             os.chdir(target_cwd)
 
     if tool == "claude":
