@@ -17,12 +17,6 @@ def _reset_codex_path_cache():
     sessions._codex_path_index = None
 
 
-@pytest.fixture(autouse=True)
-def _isolate_cwd_overrides_file(monkeypatch, tmp_path):
-    # Never let a test read or write the real user's cwd_overrides.json.
-    monkeypatch.setattr(sessions, "CWD_OVERRIDES_FILE", str(tmp_path / "cwd_overrides.json"))
-
-
 def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None):
     """Create a minimal codex rollout file, the actual on-disk source of
     truth codex_light_records() now scans directly (session_index.jsonl is
@@ -684,10 +678,39 @@ def test_cmd_resume_codex_chdirs_into_session_cwd_first(monkeypatch, tmp_path, c
     assert "switching there first" in capsys.readouterr().err
 
 
-def test_cmd_resume_cwd_override_wins_over_session_original_dir(monkeypatch, tmp_path, capsys):
-    """--cwd forces a directory even when it differs from the session's
-    own recorded cwd (e.g. resuming a claude session into an unrelated
-    project on purpose)."""
+def test_cmd_resume_cwd_matching_real_dir_just_resumes(monkeypatch, tmp_path, capsys):
+    """--cwd pointing at the session's own recorded directory is a no-op
+    beyond getting you there -- a plain --resume works fine since nothing
+    is actually being relocated."""
+    session_dir = tmp_path / "original-project"
+    session_dir.mkdir()
+
+    projects = tmp_path / "projects"
+    project_dir = projects / "-some-project"
+    project_dir.mkdir(parents=True)
+    sid = "cd385445-cec2-43c6-9919-69e87818d2dc"
+    (project_dir / f"{sid}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(session_dir), "message": {"content": "hi"}}) + "\n"
+    )
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.chdir(tmp_path)
+
+    exec_calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
+
+    sessions.cmd_resume(["claude", sid, "--cwd", str(session_dir)])
+
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(session_dir))
+    assert exec_calls == [["claude", "--resume", sid]]
+
+
+def test_cmd_resume_cwd_mismatch_hands_off_to_fresh_session_instead(monkeypatch, tmp_path, capsys):
+    """--cwd pointing at a directory *other* than the session's own recorded
+    one can't actually relocate it (claude/codex/kimi all tie a session's
+    transcript to its original directory -- resuming from elsewhere works
+    but never becomes visible to that directory's own resume picker). So
+    it should hand off to a fresh, seeded session there instead of issuing
+    a --resume that would silently do nothing useful for that directory."""
     session_original_dir = tmp_path / "original-project"
     session_original_dir.mkdir()
     forced_dir = tmp_path / "wrong-question-book"
@@ -701,6 +724,7 @@ def test_cmd_resume_cwd_override_wins_over_session_original_dir(monkeypatch, tmp
         json.dumps({"type": "user", "cwd": str(session_original_dir), "message": {"content": "hi"}}) + "\n"
     )
     monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     monkeypatch.chdir(tmp_path)
 
     exec_calls = []
@@ -709,10 +733,15 @@ def test_cmd_resume_cwd_override_wins_over_session_original_dir(monkeypatch, tmp
     sessions.cmd_resume(["claude", sid, "--cwd", str(forced_dir)])
 
     assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
-    assert exec_calls == [["claude", "--resume", sid]]
+    assert len(exec_calls) == 1
+    argv = exec_calls[0]
+    assert argv[0] == "claude"
+    assert "--resume" not in argv  # a fresh, seeded session -- not a resume
+    export_path = tmp_path / "handoffs" / f"claude-{sid}.md"
+    assert export_path.exists()
+    assert str(export_path) in argv[-1]
     err = capsys.readouterr().err
-    assert "forcing cwd" in err
-    assert "switching there first" not in err
+    assert "can't be relocated in place" in err
 
 
 def test_cmd_resume_cwd_override_rejects_non_directory(monkeypatch, tmp_path, capsys):
@@ -725,14 +754,19 @@ def test_cmd_resume_cwd_override_rejects_non_directory(monkeypatch, tmp_path, ca
     assert "is not a directory" in capsys.readouterr().err
 
 
-def test_cmd_resume_cwd_override_flows_through_resume_by_number(monkeypatch, tmp_path, capsys):
+def test_cmd_resume_cwd_flows_through_resume_by_number_as_handoff(monkeypatch, tmp_path, capsys):
     forced_dir = tmp_path / "wrong-question-book"
     forced_dir.mkdir()
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
 
     monkeypatch.setattr(sessions, "read_list_cache", lambda: [{"tool": "codex", "id": "abc123"}])
     monkeypatch.setattr(sessions, "codex_resolve", lambda prefix: ["abc123"])
     monkeypatch.setattr(sessions, "codex_cwd", lambda sid: str(tmp_path / "unrelated"))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details",
+        lambda _tool, _sid: (str(tmp_path / "unrelated"), "# Full conversation\ncontent"),
+    )
 
     exec_calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
@@ -740,43 +774,8 @@ def test_cmd_resume_cwd_override_flows_through_resume_by_number(monkeypatch, tmp
     sessions.cmd_resume(["1", "--cwd", str(forced_dir)])
 
     assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
-    assert exec_calls == [["codex", "resume", "abc123"]]
-
-
-def test_cmd_resume_cwd_override_persists_and_is_reused_without_flag(monkeypatch, tmp_path, capsys):
-    """--cwd should stick: a later plain `ai resume` (no --cwd) for the same
-    session auto-switches to the pinned directory, and `ai sessions` shows
-    it instead of the tool's own recorded cwd."""
-    session_original_dir = tmp_path / "original-project"
-    session_original_dir.mkdir()
-    forced_dir = tmp_path / "wrong-question-book"
-    forced_dir.mkdir()
-    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
-
-    codex_home = tmp_path / ".codex"
-    codex_home.mkdir()
-    write_codex_rollout(codex_home, sid, cwd=str(session_original_dir))
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
-
-    exec_calls = []
-    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: exec_calls.append(argv))
-
-    monkeypatch.chdir(tmp_path)
-    sessions.cmd_resume(["codex", sid, "--cwd", str(forced_dir)])
-    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
-
-    # listing now shows the pinned dir, not the session's original one
-    recs = sessions.codex_light_records()
-    row = sessions.resolve_row(recs[0])
-    assert row[4] == str(forced_dir)
-
-    # a later plain resume (back in some other dir, no --cwd) follows the pin
-    monkeypatch.chdir(session_original_dir)
-    sessions.cmd_resume(["codex", sid])
-
-    assert os.path.realpath(os.getcwd()) == os.path.realpath(str(forced_dir))
-    assert exec_calls == [["codex", "resume", sid]] * 2
-    assert "was pinned to" in capsys.readouterr().err
+    assert exec_calls[0][0] == "codex"
+    assert "resume" not in exec_calls[0]
 
 
 # ---------- list cache / resume by number ----------
@@ -829,12 +828,12 @@ def test_resume_by_number_hands_session_to_different_tool(monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(
         sessions, "handoff_by_number",
-        lambda n, target, extra: calls.append((n, target, extra)),
+        lambda n, target, extra, forced_cwd=None: calls.append((n, target, extra, forced_cwd)),
     )
 
     sessions.resume_by_number(1, ["codex", "-m", "gpt-5"])
 
-    assert calls == [(1, "codex", ["-m", "gpt-5"])]
+    assert calls == [(1, "codex", ["-m", "gpt-5"], None)]
 
 
 def test_resume_by_number_same_tool_resumes_without_redundant_arg(monkeypatch, tmp_path):

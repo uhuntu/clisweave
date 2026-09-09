@@ -125,9 +125,7 @@ Titles are best-effort (scanned from the first user message / prompt in each ses
 
 `kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all three tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
-Pass `--cwd <dir>` to override that and force a different directory instead, e.g. `ai resume 2 --cwd /path/to/other-project` resumes row 2's session but starts it in `/path/to/other-project` regardless of where it originally ran.
-
-A tool's own session log records only where a session first started and can't be edited after the fact, so the override is remembered separately in `~/.cache/clisweave/cwd_overrides.json`. Once you've resumed a session with `--cwd` once, later plain `ai resume`/`ai <N>` calls for that same session reuse the pinned directory automatically, and `ai sessions` shows it in the CWD column instead of the session's original directory.
+Pass `--cwd <dir>` to send it somewhere else instead, e.g. `ai resume 2 --cwd /path/to/other-project`. claude, codex, and kimi all tie a session's transcript permanently to whichever directory it first ran in — confirmed by testing `claude --resume` from an unrelated directory: the resumed turn was appended to the *original* directory's log, nothing was written under the new one — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `ai resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `ai <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
 
 ## Development
 

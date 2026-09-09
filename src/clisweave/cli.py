@@ -41,7 +41,7 @@ Examples:
   ai full                   # everything, no default 15-row cutoff
   ai resume kimi 97946bc7
   ai resume 3         # resume row 3 from the last `ai`/`ai sessions` listing
-  ai resume 2 --cwd /path/to/other-project   # resume row 2, but force this directory
+  ai resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
   ai 3 codex          # continue row 3 in a new Codex session with context
   ai update           # update clisweave itself
   ai update tools     # update claude, codex, and kimi (whichever are installed)
