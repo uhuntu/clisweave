@@ -33,6 +33,24 @@ def test_kimi_all_flags():
     assert cmd == ["kimi", "-p", "-c", "-m", "kimi-for-coding", "-y"]
 
 
+def test_trae_all_flags():
+    cmd = build_command("trae", ["-p", "-c", "-m", "sonnet", "--add-dir", "/tmp", "hello world"])
+    assert cmd == ["trae", "-p", "-c", "-m", "sonnet", "--add-dir", "/tmp", "hello world"]
+
+
+def test_trae_yolo_is_accepted_but_not_translated():
+    # Deliberate no-op, not an oversight: Trae is an IDE whose auto-approve
+    # lives in its own settings rather than behind a CLI flag (see the
+    # per-tool --yolo mapping in cli.USAGE). -y is still accepted so scripts
+    # and aliases written against another tool keep working across all four,
+    # but it must not be forwarded through as-is.
+    cmd = build_command("trae", ["-p", "-y"])
+    assert cmd == ["trae", "-p"]
+
+    cmd = build_command("trae", ["--yolo"])
+    assert cmd == ["trae"]
+
+
 def test_multiple_add_dirs_repeat_flag():
     cmd = build_command("claude", ["--add-dir", "/a", "--add-dir", "/b"])
     assert cmd == ["claude", "--add-dir", "/a", "--add-dir", "/b"]
