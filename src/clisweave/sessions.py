@@ -1,4 +1,4 @@
-"""Session listing/resuming across claude, codex, and kimi CLIs.
+"""Session listing/resuming across claude, codex, kimi, and trae CLIs.
 Invoked via `ai sessions` / `ai resume`, or standalone as `ai-sessions`.
 """
 import calendar
@@ -6,9 +6,11 @@ import glob
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
+import urllib.parse
 
 HOME = os.path.expanduser("~")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
@@ -16,7 +18,15 @@ CODEX_HOME = os.path.join(HOME, ".codex")
 KIMI_HOME = os.path.join(HOME, ".kimi-code")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
-TOOLS = ("claude", "codex", "kimi")
+TOOLS = ("claude", "codex", "kimi", "trae")
+
+TRAE_VARIANTS = ["Trae CN", "TRAE SOLO CN", "TRAE SOLO"]
+
+def _trae_base_dirs():
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return []
+    return [os.path.join(appdata, v) for v in TRAE_VARIANTS]
 
 # Remembers the last `ai sessions` listing so `ai resume <N>` can refer to a
 # row by its printed number instead of needing the full/prefix session id.
@@ -523,12 +533,18 @@ def session_handoff_details(tool, sid):
             return None
         cwd = codex_cwd(sid)
         messages = codex_handoff_messages(path)
-    else:
+    elif tool == "kimi":
         record = next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
         if not record:
             return None
         cwd = record.get("cwd")
         messages = kimi_handoff_messages(record["dir"])
+    else:
+        record = next((r for r in trae_light_records() if r["id"] == sid), None)
+        if not record:
+            return None
+        cwd = record.get("cwd")
+        messages = trae_handoff_messages(record)
 
     sections = [f"# Clisweave handoff from {tool}\n", f"Source session: `{sid}`\n"]
     for role, text in messages:
@@ -677,6 +693,124 @@ def kimi_resolve(prefix):
     return sorted(set(matches))
 
 
+# ---------- trae ----------
+
+def _trae_folder_from_workspace_json(ws_json_path):
+    try:
+        data = json.loads(open(ws_json_path, encoding="utf-8").read())
+        folder_uri = data.get("folder") or data.get("workspace") or ""
+        if folder_uri.startswith("file:///"):
+            return urllib.parse.unquote(folder_uri[8:]).replace("/", "\\")
+    except Exception:
+        pass
+    return None
+
+
+def trae_light_records():
+    """Scan Trae's workspaceStorage SQLite databases for sessions.
+
+    Trae (the IDE, not a separate CLI) stores sessions per-workspace in
+    state.vscdb files under %APPDATA%/Trae CN/User/workspaceStorage/<hash>/.
+    Each workspace.json maps the hash back to a real directory. Session IDs
+    are keys named ai-chat.chatQueryCompletion.v2.<sessionId> in that same
+    SQLite db. savedAt is Unix milliseconds -- divide by 1000 for seconds."""
+    records = []
+    seen_ids = set()
+    for base in _trae_base_dirs():
+        ws_dir = os.path.join(base, "User", "workspaceStorage")
+        if not os.path.isdir(ws_dir):
+            continue
+        for ws_hash in os.listdir(ws_dir):
+            db_path = os.path.join(ws_dir, ws_hash, "state.vscdb")
+            if not os.path.exists(db_path):
+                continue
+            cwd = _trae_folder_from_workspace_json(os.path.join(ws_dir, ws_hash, "workspace.json"))
+            try:
+                conn = sqlite3.connect(db_path)
+                cur = conn.cursor()
+                cur.execute("SELECT key, value FROM ItemTable WHERE key LIKE 'ai-chat.chatQueryCompletion.v2.%'")
+                for key, value in cur.fetchall():
+                    sid = key.split(".")[-1]
+                    if sid in seen_ids:
+                        continue
+                    seen_ids.add(sid)
+                    try:
+                        data = json.loads(value)
+                    except Exception:
+                        continue
+                    saved_ms = data.get("savedAt") or 0
+                    ts = saved_ms / 1000.0 if saved_ms else 0
+                    results = data.get("response", {}).get("result", [])
+                    snippet = " | ".join(r.get("text", "").strip() for r in results if r.get("text"))
+                    records.append({"tool": "trae", "id": sid, "ts": ts, "cwd": cwd, "db_path": db_path, "db_key": key, "snippet": snippet})
+                conn.close()
+            except Exception:
+                pass
+    return records
+
+
+def trae_title(record):
+    """Extract a display title from the session's saved query data in vscdb."""
+    try:
+        conn = sqlite3.connect(record["db_path"])
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM ItemTable WHERE key=?", (record["db_key"],))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return "(no title)"
+        data = json.loads(row[0])
+        results = data.get("response", {}).get("result", [])
+        if results:
+            text = results[0].get("text", "").strip().replace("\n", " ")
+            if text:
+                return text[:70]
+    except Exception:
+        pass
+    return "(no title)"
+
+
+def trae_resolve(prefix):
+    matches = []
+    for r in trae_light_records():
+        if r["id"].startswith(prefix):
+            matches.append(r["id"])
+    return sorted(set(matches))
+
+
+def trae_session_cwd(sid):
+    for r in trae_light_records():
+        if r["id"] == sid:
+            return r.get("cwd")
+    return None
+
+
+def trae_handoff_messages(record):
+    """Trae stores only the last query+completion pair in the vscdb
+    (full conversation history is in the encrypted database.db). Extract
+    what we can from the last saved exchange."""
+    try:
+        conn = sqlite3.connect(record["db_path"])
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM ItemTable WHERE key=?", (record["db_key"],))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return []
+        data = json.loads(row[0])
+        results = data.get("response", {}).get("result", [])
+    except Exception:
+        return []
+    messages = []
+    for i, r in enumerate(results):
+        text = r.get("text", "").strip()
+        if not text:
+            continue
+        role = "user" if i % 2 == 0 else "assistant"
+        messages.append((role, text))
+    return messages
+
+
 # ---------- shared ----------
 
 def relative_time(ts):
@@ -740,6 +874,8 @@ def cmd_list(args):
         light += codex_light_records()
     if tool_filter in (None, "kimi"):
         light += kimi_light_records(show_all)
+    if tool_filter in (None, "trae"):
+        light += trae_light_records()
 
     light.sort(key=lambda r: r["ts"], reverse=True)
 
@@ -781,6 +917,8 @@ def cmd_stats(args):
         light += codex_light_records()
     if tool_filter in (None, "kimi"):
         light += kimi_light_records(True)
+    if tool_filter in (None, "trae"):
+        light += trae_light_records()
 
     total = len(light)
     if total == 0:
@@ -823,8 +961,11 @@ def resolve_row(r):
     elif tool == "codex":
         title = r.get("title") or codex_rollout_title(r["id"])
         cwd_show = codex_cwd(r["id"]) or "?"
-    else:
+    elif tool == "kimi":
         title = kimi_title(r["dir"])
+        cwd_show = r.get("cwd") or "?"
+    else:
+        title = trae_title(r)
         cwd_show = r.get("cwd") or "?"
     return (tool, r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
@@ -908,11 +1049,41 @@ def cmd_resume(args):
             exec_or_die(["claude", "--resume"])
         elif tool == "codex":
             exec_or_die(["codex", "resume"])
+        elif tool == "trae":
+            # Trae is an IDE without a CLI resume command -- open the app.
+            try:
+                os.startfile("trae")
+            except Exception:
+                print("ai resume: 'trae' not found (Trae is an IDE, run it from the Start menu)", file=sys.stderr)
+                sys.exit(127)
+            return
         else:
             exec_or_die(["kimi", "-S"])
         return
 
     prefix, extra = rest[0], rest[1:]
+
+    if tool == "trae":
+        matches = trae_resolve(prefix)
+        if len(matches) == 0:
+            full_id = prefix
+        elif len(matches) == 1:
+            full_id = matches[0]
+        else:
+            print(f"ai resume: ambiguous id '{prefix}', matches:", file=sys.stderr)
+            for m in matches:
+                print(f"  {m}", file=sys.stderr)
+            sys.exit(1)
+        target_cwd = forced_cwd or trae_session_cwd(full_id)
+        if target_cwd and os.path.isdir(target_cwd):
+            print(f"ai resume: Trae session lives in {target_cwd} -- open Trae there", file=sys.stderr)
+        try:
+            os.startfile("trae")
+        except Exception:
+            print("ai resume: 'trae' not found (Trae is an IDE, run it from the Start menu)", file=sys.stderr)
+            sys.exit(127)
+        return
+
     resolver = {"claude": claude_resolve, "codex": codex_resolve, "kimi": kimi_resolve}[tool]
     matches = resolver(prefix)
 

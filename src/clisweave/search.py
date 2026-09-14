@@ -67,6 +67,8 @@ def gather_candidates(tool_filter):
         light += sessions.codex_light_records()
     if tool_filter in (None, "kimi"):
         light += sessions.kimi_light_records(show_all=False)
+    if tool_filter in (None, "trae"):
+        light += sessions.trae_light_records()
     light.sort(key=lambda r: r["ts"], reverse=True)
     return light
 
@@ -79,6 +81,8 @@ def snippet_for(r):
         # title (thread_name, when available) is already shown separately
         # in the prompt line -- the snippet's job is additional content.
         return sessions.codex_rollout_snippet(r["id"])
+    if tool == "trae":
+        return r.get("snippet", "")
     return sessions.kimi_snippet(r["dir"])
 
 

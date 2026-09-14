@@ -1,17 +1,17 @@
-"""ai - unified wrapper for claude / codex / kimi CLIs.
-Normalizes a handful of common flags across the three tools and passes
+"""ai - unified wrapper for claude / codex / kimi / trae CLIs.
+Normalizes a handful of common flags across the four tools and passes
 everything else straight through.
 """
 import sys
 
 from . import __version__, search, sessions, update
 
-USAGE = """Usage: ai <claude|codex|kimi> [common-options] [prompt] [-- extra native args]
+USAGE = """Usage: ai <claude|codex|kimi|trae> [common-options] [prompt] [-- extra native args]
        ai sessions [--tool T] [--limit N|all] [--cwd] [--all]
        ai full [--tool T] [--cwd] [--all]
        ai search <topic> [--tool T] [--judge claude|codex|kimi]
-       ai resume <claude|codex|kimi|N> [session-id-or-prefix] [--cwd <dir>]
-       ai <N> <claude|codex|kimi> [native-options]
+       ai resume <claude|codex|kimi|trae|N> [session-id-or-prefix] [--cwd <dir>]
+       ai <N> <claude|codex|kimi|trae> [native-options]
        ai update [tools|all]
        ai stats [--tool T]
 
@@ -30,6 +30,7 @@ Per-tool --yolo mapping:
   claude  -> --dangerously-skip-permissions
   codex   -> --approve-for-me   (auto-approve, still sandboxed)
   kimi    -> -y/--yolo
+  trae    -> (none; Trae is an IDE, uses always-approve in settings)
 
 Examples:
   ai claude -p "summarize this repo"
@@ -50,7 +51,7 @@ Examples:
   ai stats            # session counts per tool, oldest/newest, top directories
 """
 
-TOOLS = ("claude", "codex", "kimi")
+TOOLS = ("claude", "codex", "kimi", "trae")
 
 
 class UsageError(Exception):
@@ -64,7 +65,7 @@ def build_command(tool, rest):
     command to run. Pure function, no I/O — raises UsageError on bad
     input instead of exiting, so it's easy to unit test."""
     if tool not in TOOLS:
-        raise UsageError(f"unknown tool '{tool}' (expected claude, codex, or kimi, or sessions/full/search/resume/update)")
+        raise UsageError(f"unknown tool '{tool}' (expected claude, codex, kimi, or trae, or sessions/full/search/resume/update)")
 
     print_ = False
     continue_session = False
@@ -128,7 +129,7 @@ def build_command(tool, rest):
             cmd += ["--add-dir", d]
         if yolo:
             cmd.append("--approve-for-me")
-    else:  # kimi
+    elif tool == "kimi":
         cmd = ["kimi"]
         if print_:
             cmd.append("-p")
@@ -140,6 +141,16 @@ def build_command(tool, rest):
             cmd += ["--add-dir", d]
         if yolo:
             cmd.append("-y")
+    elif tool == "trae":
+        cmd = ["trae"]
+        if print_:
+            cmd.append("-p")
+        if continue_session:
+            cmd.append("-c")
+        if model:
+            cmd += ["-m", model]
+        for d in add_dirs:
+            cmd += ["--add-dir", d]
 
     cmd += trailing
     return cmd
