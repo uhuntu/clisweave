@@ -225,6 +225,35 @@ def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
     assert "falling back" in err
 
 
+def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
+    ))
+
+    calls = []
+
+    class CodexOK:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "claude":
+            raise search.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return CodexOK()
+
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["topic"])
+
+    assert [call[0] for call in calls] == ["claude", "codex"]
+    assert "timed out; falling back" in capsys.readouterr().err
+
+
 def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys):
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
@@ -323,6 +352,37 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch, capsys):
     assert "Finished batch 3/3: 0 matches" in err
 
 
+def test_first_batch_selects_judge_for_remaining_batches(monkeypatch):
+    n = search.CHUNK_SIZE * 2 + 30
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    _stub_resolve_and_render(monkeypatch)
+
+    calls = []
+
+    class ClaudeLimit:
+        returncode = 1
+        stdout = "You've hit your session limit"
+        stderr = ""
+
+    class CodexOK:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[0])
+        return ClaudeLimit() if argv[0] == "claude" else CodexOK()
+
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["topic"])
+
+    # Claude is probed only by the first batch. Once codex succeeds, both
+    # remaining batches start directly with codex.
+    assert calls.count("claude") == 1
+    assert calls.count("codex") == 3
+
+
 def test_cmd_search_unions_matches_across_chunks(monkeypatch):
     """Each chunk is numbered locally (1..len(chunk)); matches from later
     chunks must map back to the correct global candidate, not collide with
@@ -387,7 +447,7 @@ def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys
     assert matched_ids == {"id-100"}  # only chunk 2's match survives
 
 
-def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch):
+def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch, capsys):
     n = search.CHUNK_SIZE + 5
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
@@ -402,6 +462,7 @@ def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         search.cmd_search(["--judge", "claude", "topic"])
     assert exc_info.value.code != 0
+    assert "all 2 batches failed" in capsys.readouterr().err
 
 
 def test_cmd_search_single_small_batch_no_batch_label(monkeypatch, capsys):

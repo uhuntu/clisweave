@@ -51,6 +51,10 @@ CHUNK_SIZE = 100
 # search alive forever, even after every other chunk has finished.
 JUDGE_TIMEOUT_SECONDS = 120
 
+# Once the first batch has selected a working judge, the remaining batches
+# can safely fan out without probing an unavailable judge over and over.
+MAX_CONCURRENT_BATCHES = 8
+
 
 class JudgeError(Exception):
     """A judge call failed unrecoverably. Carries a process-style exit
@@ -141,16 +145,29 @@ def _is_session_limit(result):
 def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     """Run the judge (falling back off claude on a session-limit hit,
     unless the user pinned one explicitly) against one prompt -- a full
-    batch, or one chunk of one. Returns the set of 1-based indices (local
-    to this prompt) the judge picked. Raises JudgeError if every judge in
-    the fallback sequence fails."""
-    judges = [judge] if judge_explicit else [DEFAULT_JUDGE, "codex", "kimi"]
+    batch, or one chunk of one. Returns the picked local indices and the
+    judge that succeeded. Raises JudgeError if every judge in the fallback
+    sequence fails."""
+    fallback_order = [DEFAULT_JUDGE, "codex", "kimi"]
+    if judge_explicit:
+        judges = [judge]
+    else:
+        # A prior batch may already have selected codex or kimi. Resume at
+        # that point instead of retrying judges known not to be available.
+        judges = fallback_order[fallback_order.index(judge):]
     result = None
-    for j in judges:
+    for judge_idx, j in enumerate(judges):
         print(f"Asking {j} to judge {label} ...", file=sys.stderr, flush=True)
-        result = _call_judge(j, prompt)
+        try:
+            result = _call_judge(j, prompt)
+        except JudgeError as e:
+            has_fallback = not judge_explicit and judge_idx + 1 < len(judges)
+            if e.code == 124 and has_fallback:
+                print("  -> timed out; falling back to next judge", file=sys.stderr)
+                continue
+            raise
         if result.returncode == 0:
-            return parse_numbers(result.stdout, n)
+            return parse_numbers(result.stdout, n), j
         print(f"ai search: {j} exited with an error ({label})", file=sys.stderr)
         if result.stdout:
             print(result.stdout, file=sys.stderr)
@@ -215,14 +232,16 @@ def cmd_search(argv):
     chunks = [entries[i:i + CHUNK_SIZE] for i in range(0, len(entries), CHUNK_SIZE)]
     n_chunks = len(chunks)
 
-    def process_chunk(chunk_idx):
+    def process_chunk(chunk_idx, selected_judge=judge):
         chunk = chunks[chunk_idx]
         offset = chunk_idx * CHUNK_SIZE
         prompt = build_prompt(topic, chunk)
         label = f"{len(chunk)} sessions against: {topic!r}" if n_chunks == 1 else (
             f"batch {chunk_idx + 1}/{n_chunks} ({len(chunk)} sessions) against: {topic!r}"
         )
-        picked_local = run_judge_with_fallback(prompt, len(chunk), judge, judge_explicit, label)
+        picked_local, used_judge = run_judge_with_fallback(
+            prompt, len(chunk), selected_judge, judge_explicit, label
+        )
         if n_chunks > 1:
             noun = "match" if len(picked_local) == 1 else "matches"
             print(
@@ -231,24 +250,41 @@ def cmd_search(argv):
                 file=sys.stderr,
                 flush=True,
             )
-        return {offset + n for n in picked_local}
+        return {offset + n for n in picked_local}, used_judge
 
     matched_indices = set()
     if n_chunks == 1:
         try:
-            matched_indices = process_chunk(0)
+            matched_indices, _ = process_chunk(0)
         except JudgeError as e:
             sys.exit(e.code)
     else:
         failures = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, n_chunks)) as pool:
-            futures = [pool.submit(process_chunk, i) for i in range(n_chunks)]
+        # Let one real batch choose the usable judge before fanning out. This
+        # avoids launching every chunk against a judge that is at its session
+        # limit or otherwise unavailable.
+        selected_judge = judge
+        try:
+            first_matches, selected_judge = process_chunk(0)
+            matched_indices |= first_matches
+        except JudgeError:
+            failures += 1
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(MAX_CONCURRENT_BATCHES, n_chunks - 1)
+        ) as pool:
+            futures = [
+                pool.submit(process_chunk, i, selected_judge)
+                for i in range(1, n_chunks)
+            ]
             for fut in concurrent.futures.as_completed(futures):
                 try:
-                    matched_indices |= fut.result()
+                    chunk_matches, _ = fut.result()
+                    matched_indices |= chunk_matches
                 except JudgeError:
                     failures += 1
         if failures == n_chunks:
+            print(f"ai search: all {n_chunks} batches failed", file=sys.stderr)
             sys.exit(1)
         if failures:
             print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
