@@ -46,6 +46,11 @@ JUDGE_USES_STDIN = {"claude", "codex"}
 # one batch.
 CHUNK_SIZE = 100
 
+# A judge CLI can occasionally stop responding (for example while waiting on
+# a network request).  Without a timeout, one stuck chunk keeps the whole
+# search alive forever, even after every other chunk has finished.
+JUDGE_TIMEOUT_SECONDS = 120
+
 
 class JudgeError(Exception):
     """A judge call failed unrecoverably. Carries a process-style exit
@@ -108,11 +113,24 @@ def _call_judge(judge, prompt):
     judge_cmd = JUDGE_CMD[judge]
     try:
         if judge in JUDGE_USES_STDIN:
-            return subprocess.run(judge_cmd, input=prompt, capture_output=True, text=True, encoding="utf-8")
-        return subprocess.run([*judge_cmd, prompt], capture_output=True, text=True, encoding="utf-8")
+            return subprocess.run(
+                judge_cmd, input=prompt, capture_output=True, text=True,
+                encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+            )
+        return subprocess.run(
+            [*judge_cmd, prompt], capture_output=True, text=True,
+            encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+        )
     except FileNotFoundError:
         print(f"ai search: '{judge_cmd[0]}' not found on PATH", file=sys.stderr)
         raise JudgeError(127)
+    except subprocess.TimeoutExpired:
+        print(
+            f"ai search: {judge_cmd[0]} timed out after "
+            f"{JUDGE_TIMEOUT_SECONDS} seconds",
+            file=sys.stderr,
+        )
+        raise JudgeError(124)
 
 
 def _is_session_limit(result):
@@ -205,6 +223,14 @@ def cmd_search(argv):
             f"batch {chunk_idx + 1}/{n_chunks} ({len(chunk)} sessions) against: {topic!r}"
         )
         picked_local = run_judge_with_fallback(prompt, len(chunk), judge, judge_explicit, label)
+        if n_chunks > 1:
+            noun = "match" if len(picked_local) == 1 else "matches"
+            print(
+                f"Finished batch {chunk_idx + 1}/{n_chunks}: "
+                f"{len(picked_local)} {noun}",
+                file=sys.stderr,
+                flush=True,
+            )
         return {offset + n for n in picked_local}
 
     matched_indices = set()

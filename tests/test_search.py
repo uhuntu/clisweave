@@ -14,6 +14,38 @@ def test_judge_calls_dont_persist_a_visible_session():
     assert "--ephemeral" in search.JUDGE_CMD["codex"]
 
 
+def test_judge_call_has_timeout(monkeypatch):
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    monkeypatch.setattr(
+        search.subprocess,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or FakeResult(),
+    )
+
+    search._call_judge("claude", "prompt")
+
+    assert calls[0][1]["timeout"] == search.JUDGE_TIMEOUT_SECONDS
+
+
+def test_judge_timeout_reports_cleanly(monkeypatch, capsys):
+    def time_out(*args, **kwargs):
+        raise search.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(search.subprocess, "run", time_out)
+
+    with pytest.raises(search.JudgeError) as exc_info:
+        search._call_judge("claude", "prompt")
+
+    assert exc_info.value.code == 124
+    assert "timed out after" in capsys.readouterr().err
+
+
 def test_build_prompt_numbers_entries_in_order():
     prompt = search.build_prompt("nfc issue", [
         ("codex", "/a", "Find isnfcon", "Find isnfcon"),
@@ -258,7 +290,7 @@ def _stub_resolve_and_render(monkeypatch):
     return rendered
 
 
-def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch):
+def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch, capsys):
     """Regression test: a single 493-candidate batch demonstrably missed a
     real match (confirmed by checking the missed candidate's snippet,
     which contained the search term just as clearly as the one that *was*
@@ -285,6 +317,10 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch):
 
     assert len(seen_sizes) == 3
     assert sum(seen_sizes) == 3  # one "1. [" per chunk, confirming 3 separate prompts
+    err = capsys.readouterr().err
+    assert "Finished batch 1/3: 0 matches" in err
+    assert "Finished batch 2/3: 0 matches" in err
+    assert "Finished batch 3/3: 0 matches" in err
 
 
 def test_cmd_search_unions_matches_across_chunks(monkeypatch):
