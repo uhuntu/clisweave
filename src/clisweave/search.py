@@ -14,6 +14,25 @@ the missed candidate's snippet, which contained the term just as clearly
 as the one that *was* found). Smaller batches, judged independently and
 unioned, trade more LLM calls for reliable recall. Chunks run in parallel
 so wall-clock time stays close to a single call's latency.
+
+Even with chunking, judging alone demonstrably *misses* real matches.
+Searching for "esper" over 534 sessions returned only the 2 sessions that
+had the word in their title, and dropped 7 others that mention it in their
+transcripts -- one of them 58 times, one 19 times -- just because the
+800-char sampled snippet never covered where the word actually appears,
+so the judge was never shown it. So there are now two independent passes,
+unioned:
+
+1. a local, free exhaustive scan of each candidate's *full* text for the
+   topic's own words; anything containing all of them matches outright,
+   with no LLM involved, so it can't be lost in a long list or in the gap
+   between sampled messages;
+2. the LLM judge (the only thing that can catch a session that discusses
+   the topic without ever using the words, e.g. by project directory).
+
+Candidates already matched pass 1 are dropped from the judge's list, which
+keeps its batches shorter -- the same "lost in a long list" effect the
+chunking exists to avoid.
 """
 import concurrent.futures
 import re
@@ -46,6 +65,21 @@ JUDGE_USES_STDIN = {"claude", "codex"}
 # one batch.
 CHUNK_SIZE = 100
 
+# Below this length a word is more likely to be noise than a searchable
+# term ("C", "go", "2"), so it can't carry the literal pass on its own.
+TERM_MIN_LEN = 3
+
+# Words common enough that requiring their presence adds no signal while
+# making the literal pass stricter than the user meant. Not a real
+# stopword list -- just the handful that otherwise turn every natural-
+# language topic into "match almost anything".
+TOPIC_STOPWORDS = frozenset({
+    "the", "and", "for", "but", "not", "you", "your", "our", "its", "his",
+    "her", "was", "are", "were", "has", "have", "had", "can", "could",
+    "with", "from", "into", "that", "this", "what", "when", "where", "why",
+    "please", "about", "issue", "problem", "session",
+})
+
 
 class JudgeError(Exception):
     """A judge call failed unrecoverably. Carries a process-style exit
@@ -59,14 +93,16 @@ class JudgeError(Exception):
         self.code = code
 
 
-def gather_candidates(tool_filter):
+def gather_candidates(tool_filter, include_archived=False):
     light = []
     if tool_filter in (None, "claude"):
         light += sessions.claude_light_records()
     if tool_filter in (None, "codex"):
         light += sessions.codex_light_records()
     if tool_filter in (None, "kimi"):
-        light += sessions.kimi_light_records(show_all=False)
+        # archived kimi sessions are excluded by default, same as the plain
+        # listing -- `ai search --all` opts back in.
+        light += sessions.kimi_light_records(show_all=include_archived)
     light.sort(key=lambda r: r["ts"], reverse=True)
     return light
 
@@ -94,13 +130,79 @@ def build_prompt(topic, entries):
         f"the ones relevant to this topic: {topic!r}\n\n"
         "Reply with ONLY a comma-separated list of the numbers below that are relevant. "
         "No other text, no explanation. If none are relevant, reply with the single "
-        "word: none\n\n" + "\n".join(lines)
+        "word: none\n\n"
+        "Favour recall over precision: a session only has to be plausibly connected "
+        "to the topic -- discussing it, mentioning it in passing, or being part of the "
+        "same investigation. Include it if you have any real doubt either way. Sessions "
+        "that literally contain the topic's words have already been matched locally and "
+        "are not in this list, so a near-miss here is the only chance to surface them. "
+        "Missing a relevant session is a real failure; listing one that turns out "
+        "unrelated just costs the human one row to skim.\n\n" + "\n".join(lines)
     )
 
 
 def parse_numbers(text, max_n):
     nums = {int(m) for m in re.findall(r"\d+", text)}
     return {n for n in nums if 1 <= n <= max_n}
+
+
+def topic_terms(topic):
+    """The words a session's text must contain to be a literal match.
+
+    Words, not raw substrings, so searching "esper" can't match
+    "desperate"; and the filler words are dropped so that a natural-
+    language topic like "the nfc frequency lock issue" means nfc +
+    frequency + lock rather than every session that ever says "the". If
+    that leaves nothing (a short, all-stopword topic), fall back to the
+    raw tokens -- stricter than dropping them would be the wrong
+    direction, since the whole point is not missing things."""
+    tokens = [t.lower() for t in re.findall(r"\w+", topic) if len(t) >= TERM_MIN_LEN]
+    meaningful = [t for t in tokens if t not in TOPIC_STOPWORDS]
+    chosen = meaningful or tokens
+    if not chosen and len(topic.strip()) >= TERM_MIN_LEN:
+        # No usable words at all (e.g. a topic written entirely in
+        # punctuation-heavy shorthand) -- fall back to the literal phrase.
+        return [topic.strip().lower()]
+    return list(dict.fromkeys(chosen))
+
+
+def _term_pattern(term):
+    # Word boundaries rather than \b, spelled out so a term that itself
+    # starts/ends in a non-word character ("c++") still matches.
+    left = r"(?<![0-9A-Za-z_])" if term[:1].isalnum() or term[:1] == "_" else ""
+    right = r"(?![0-9A-Za-z_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
+    return re.compile(left + re.escape(term) + right, re.IGNORECASE)
+
+
+def topic_matchers(topic):
+    """One compiled pattern per topic term, or [] if there's nothing worth
+    scanning for locally."""
+    return [_term_pattern(t) for t in topic_terms(topic)]
+
+
+def literal_hits(matchers, records):
+    """The deterministic half of the search: candidates whose full text
+    contains every topic term.
+
+    Reads each session's whole transcript locally (a few seconds for 500+
+    sessions, no LLM cost) and so cannot suffer the judge's failure modes
+    -- it doesn't depend on the ~800-char sampled snippet happening to
+    cover where the word appears, and nothing gets lost in a long list.
+    Returns 1-based indices into `records`."""
+    hits = set()
+    if not matchers:
+        return hits
+    needed = len(matchers)
+    for n, record in enumerate(records, start=1):
+        found = set()
+        for text in sessions.session_message_texts(record):
+            for i, rx in enumerate(matchers):
+                if i not in found and rx.search(text):
+                    found.add(i)
+            if len(found) == needed:
+                hits.add(n)
+                break
+    return hits
 
 
 def _call_judge(judge, prompt):
@@ -151,12 +253,16 @@ def cmd_search(argv):
     tool_filter = None
     judge = DEFAULT_JUDGE
     judge_explicit = False
+    include_archived = False
     topic_parts = []
 
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--tool":
+        if a == "--all":
+            include_archived = True
+            i += 1
+        elif a == "--tool":
             if i + 1 >= len(argv):
                 print("ai search: --tool requires a value", file=sys.stderr)
                 sys.exit(1)
@@ -181,18 +287,29 @@ def cmd_search(argv):
 
     topic = " ".join(topic_parts).strip()
     if not topic:
-        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi]", file=sys.stderr)
+        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--all]", file=sys.stderr)
         sys.exit(1)
 
-    candidates = gather_candidates(tool_filter)
+    candidates = gather_candidates(tool_filter, include_archived=include_archived)
     if not candidates:
         print("No sessions found.")
         return
 
+    # Stage 1: cheap local pass over each session's full transcript. See the
+    # module docstring -- the judge alone was missing sessions that mention
+    # the topic dozens of times but never in the sampled snippet.
+    literal = literal_hits(topic_matchers(topic), candidates)
+    # Indices (0-based) still needing the judge's semantic opinion.
+    judged = [i for i in range(len(candidates)) if i + 1 not in literal]
+    if literal:
+        verbatim = "session contains" if len(literal) == 1 else "sessions contain"
+        print(f"ai search: {len(literal)} {verbatim} the topic verbatim "
+              f"(matched locally); asking the judge about the other {len(judged)}",
+              file=sys.stderr)
+
     rows = [sessions.resolve_row(r) for r in candidates]
-    snippets = [snippet_for(r) for r in candidates]
     # row: (tool, full_id, when, short_id, cwd, title)
-    entries = [(row[0], row[4], row[5], snippet) for row, snippet in zip(rows, snippets)]
+    entries = [(rows[i][0], rows[i][4], rows[i][5], snippet_for(candidates[i])) for i in judged]
 
     chunks = [entries[i:i + CHUNK_SIZE] for i in range(0, len(entries), CHUNK_SIZE)]
     n_chunks = len(chunks)
@@ -207,27 +324,41 @@ def cmd_search(argv):
         picked_local = run_judge_with_fallback(prompt, len(chunk), judge, judge_explicit, label)
         return {offset + n for n in picked_local}
 
-    matched_indices = set()
+    # Stage 2: the judge, over whatever the local pass couldn't settle.
+    # `judged` maps each prompted entry back to its candidate index, since
+    # literal matches are no longer part of the numbered list.
+    matched_indices = set(literal)
     if n_chunks == 1:
         try:
-            matched_indices = process_chunk(0)
+            picked = process_chunk(0)
         except JudgeError as e:
+            # The judge failed outright -- still show what the local pass
+            # found rather than throwing those matches away with it.
+            if matched_indices:
+                print(f"ai search: judge failed; showing only the {len(matched_indices)} "
+                      "verbatim matches", file=sys.stderr)
+                sessions.render_rows([rows[n - 1] for n in sorted(matched_indices)])
+                return
             sys.exit(e.code)
-    else:
+        matched_indices |= {judged[n - 1] + 1 for n in picked}
+    elif n_chunks > 1:
         failures = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, n_chunks)) as pool:
             futures = [pool.submit(process_chunk, i) for i in range(n_chunks)]
             for fut in concurrent.futures.as_completed(futures):
                 try:
-                    matched_indices |= fut.result()
+                    matched_indices |= {judged[n - 1] + 1 for n in fut.result()}
                 except JudgeError:
                     failures += 1
         if failures == n_chunks:
+            print(f"ai search: all {n_chunks} batches failed; showing only the verbatim "
+                  "matches", file=sys.stderr)
+            sessions.render_rows([rows[n - 1] for n in sorted(matched_indices)])
             sys.exit(1)
         if failures:
             print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
 
-    matched = [row for n, row in enumerate(rows, start=1) if n in matched_indices]
+    matched = [rows[n - 1] for n in sorted(matched_indices)]
 
     if not matched:
         print("No relevant sessions found.")

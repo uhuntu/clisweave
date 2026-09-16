@@ -594,6 +594,35 @@ def kimi_handoff_messages(sdir):
     return messages
 
 
+def session_message_texts(record):
+    """Yield each stored user/assistant message's text, in transcript order,
+    for a full-content scan (`ai search`'s literal pass).
+
+    Delegates to the same readers `perform_handoff` uses, so a scan sees
+    exactly the text a handoff export would contain -- i.e. the whole
+    conversation, not just the short excerpt that claude_snippet's stride
+    sampling happens to land on."""
+
+    tool = record["tool"]
+    if tool == "claude":
+        path = record.get("path")
+        if not path:
+            return
+        messages = claude_handoff_messages(path)
+    elif tool == "codex":
+        path = codex_rollout_path(record.get("id", ""))
+        if not path:
+            return
+        messages = codex_handoff_messages(path)
+    else:
+        sdir = record.get("dir")
+        if not sdir:
+            return
+        messages = kimi_handoff_messages(sdir)
+    for _role, text in messages:
+        yield text
+
+
 def write_handoff_export(tool, sid, transcript):
     os.makedirs(HANDOFF_DIR, exist_ok=True)
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)

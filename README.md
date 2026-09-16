@@ -86,6 +86,7 @@ ai 3 codex                  # hand row 3's context to a new Codex session
 ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
 ai search "katago" --tool claude           # restrict the candidates to one tool
 ai search "..." --judge kimi               # use a different model to judge relevance
+ai search "..." --all                      # include archived sessions too
 
 ai stats                    # session counts per tool, oldest/newest, top directories
 ai stats --tool claude      # stats for one tool only
@@ -100,6 +101,13 @@ To switch agents, put the target tool after the row number: `ai 3 codex`. Cliswe
 Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)". So `ai search` doesn't grep for your exact words; it builds one prompt listing every candidate session's tool, cwd, title, and a short content snippet, and asks an LLM (`claude -p` by default) to pick out which numbers are actually relevant to your topic. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi` account bills them) every time you run it.
 
 It reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
+
+Judging alone isn't enough to find everything, though: it only ever sees each session's tool, cwd, title, and an ~800-character snippet, so a topic buried in the middle of a long transcript is invisible to it. Searching `esper` returned just the 2 sessions with the word in their title and silently dropped 7 that mention it in their bodies — 58 times in one case, 19 in another. So there are now two passes, and their results are unioned:
+
+1. **A local pass over each session's full transcript**, reading the entire conversation (not just the snippet) for the topic's own words — word-bounded, so `esper` doesn't match "desperate", and all terms required, so "the nfc frequency lock issue" doesn't collapse to "mentions the". It costs no tokens and can't lose anything in a long list. On 534 sessions / 712 MB it takes ~3s.
+2. **The LLM judge**, for everything the local pass couldn't settle — still the only thing that can catch a session discussing the topic without ever using those words.
+
+Local matches are dropped from the judge's list, which keeps its batches shorter, and the judge is told to prefer recall over precision, since a session that literally contains your words is already guaranteed a row. If every candidate matches locally, no LLM call is made at all.
 
 ### Normalized flags (`ai <tool> ...`)
 

@@ -9,7 +9,7 @@ from . import __version__, search, sessions, update
 USAGE = """Usage: ai <claude|codex|kimi> [common-options] [prompt] [-- extra native args]
        ai sessions [--tool T] [--limit N|all] [--cwd] [--all]
        ai full [--tool T] [--cwd] [--all]
-       ai search <topic> [--tool T] [--judge claude|codex|kimi]
+       ai search <topic> [--tool T] [--judge claude|codex|kimi] [--all]
        ai resume <claude|codex|kimi|N> [session-id-or-prefix] [--cwd <dir>]
        ai <N> <claude|codex|kimi> [native-options]
        ai update [tools|all]

@@ -5,6 +5,169 @@ import pytest
 from clisweave import search, sessions
 
 
+# ---------- literal (local) pass ----------
+
+def write_transcript(path, messages):
+    """Minimal claude-shaped jsonl: one user/assistant text message per
+    entry, which is all session_message_texts() reads."""
+    lines = [
+        json.dumps({"type": role, "message": {"role": role, "content": text}})
+        for role, text in messages
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def _claude_record(path, ts=1):
+    return {"tool": "claude", "id": "id-local", "ts": ts, "path": path, "cwd": "/home/hunt"}
+
+
+@pytest.mark.parametrize(
+    "topic,expected",
+    [
+        ("esper", ["esper"]),
+        ("Esper OTA capture", ["esper", "ota", "capture"]),
+        # filler shouldn't become a required word, or "the nfc frequency lock
+        # issue" would reduce to "matches anything mentioning the issue"
+        ("the nfc frequency lock issue", ["nfc", "frequency", "lock"]),
+        # ...but a topic made entirely of filler still has to search for
+        # something, rather than silently meaning "everything"
+        ("the issue", ["the", "issue"]),
+        ("go", []),  # too short to be a searchable term on its own
+        ("", []),
+    ],
+)
+def test_topic_terms(topic, expected):
+    assert search.topic_terms(topic) == expected
+
+
+def test_topic_matchers_are_word_bounded_and_case_insensitive():
+    """'esper' must not drag in every transcript containing 'desperate'
+    (a real substring collision for this exact search term)."""
+    matchers = search.topic_matchers("esper")
+    assert len(matchers) == 1
+    assert not matchers[0].search("they grew desperate")
+    assert matchers[0].search("the ESPER build failed")
+    assert matchers[0].search("Full procedure (Esper-free)")
+
+
+def test_topic_matchers_require_every_term():
+    """All terms are required, in any order or wording distance apart --
+    a single one of them isn't enough."""
+    matchers = search.topic_matchers("nfc frequency lock")
+    assert all(m.search("the nfc frequency lock is broken") for m in matchers)
+    assert not all(m.search("just an nfc question") for m in matchers)
+
+
+def test_literal_hits_finds_word_the_snippet_would_miss(tmp_path):
+    """Regression test: searching 'esper' returned only the 2 sessions with
+    the word in their title and dropped 7 that mention it in the body --
+    one 58 times, one 19 times -- because the 800-char sampled snippet
+    never covered where the word appears, so the judge never saw it."""
+    path = write_transcript(tmp_path / "session.jsonl", [
+        ("user", "hi"),
+        *[(role, "unrelated filler message") for role in
+          ["assistant", "user"] * 40],
+        ("user", "keep going"),
+        ("assistant", "we traced it back to the esper service"),
+    ])
+    record = _claude_record(path)
+
+    snippets_that_judge_sees = sessions.claude_snippet(path)
+    assert "esper" not in snippets_that_judge_sees  # the judge can't see it
+
+    assert search.literal_hits(search.topic_matchers("esper"), [record]) == {1}
+
+
+def test_literal_hits_ignores_non_matching_session(tmp_path):
+    path = write_transcript(tmp_path / "session.jsonl", [
+        ("user", "something entirely different"),
+    ])
+    assert search.literal_hits(search.topic_matchers("esper"), [_claude_record(path)]) == set()
+
+
+def test_literal_hits_returns_empty_without_usable_terms(tmp_path):
+    path = write_transcript(tmp_path / "session.jsonl", [("user", "anything")])
+    assert search.literal_hits(search.topic_matchers("go"), [_claude_record(path)]) == set()
+
+
+def _judge_returning(stdout):
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(kwargs.get("input") or argv[-1])
+        FakeResult.stdout = stdout
+        return FakeResult()
+
+    return calls, fake_run
+
+
+def test_cmd_search_unions_local_matches_with_judge_picks(monkeypatch, tmp_path, capsys):
+    """The judge answering 'none' must not erase a session that literally
+    contains every topic word."""
+    path = write_transcript(tmp_path / "session.jsonl", [
+        ("user", "why does esper keep timing out"),
+    ])
+    monkeypatch.setattr(search, "gather_candidates", lambda *a, **kw: [
+        _claude_record(path, ts=2),
+        {"tool": "codex", "id": "id-2", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    rendered = []
+    monkeypatch.setattr(sessions, "render_rows", lambda rows: rendered.append(rows))
+
+    calls, fake_run = _judge_returning("none")
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["esper"])
+
+    assert len(rendered) == 1
+    assert [row[1] for row in rendered[0]] == ["id-local"]
+    # the already-matched session isn't sent to the judge at all -- only the
+    # remaining candidate is there, renumbered from 1
+    assert "[claude]" not in calls[0]
+    assert "1. [codex]" in calls[0]  # the sole remaining candidate, renumbered from 1
+
+
+def test_cmd_search_skips_judge_when_everything_matches_locally(monkeypatch, tmp_path):
+    path = write_transcript(tmp_path / "session.jsonl", [("user", "esper again")])
+    monkeypatch.setattr(search, "gather_candidates", lambda *a, **kw: [_claude_record(path)])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    rendered = []
+    monkeypatch.setattr(sessions, "render_rows", lambda rows: rendered.append(rows))
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("judge should not be called when the local pass settles everything")
+
+    monkeypatch.setattr(search.subprocess, "run", fail_if_called)
+
+    search.cmd_search(["esper"])
+
+    assert [row[1] for row in rendered[0]] == ["id-local"]
+
+
+def test_cmd_search_all_includes_archived_kimi_sessions(monkeypatch, capsys):
+    seen = []
+
+    monkeypatch.setattr(sessions, "claude_light_records", lambda: [])
+    monkeypatch.setattr(sessions, "codex_light_records", lambda: [])
+    monkeypatch.setattr(sessions, "kimi_light_records", lambda show_all: seen.append(show_all) or [])
+
+    search.cmd_search(["topic"])
+    assert seen == [False]
+
+    search.cmd_search(["--all", "topic"])
+    assert seen == [False, True]
+
+
 def test_judge_calls_dont_persist_a_visible_session():
     """Regression test: without an ephemeral/no-persist flag, the judge
     call's own prompt (the whole candidate list) gets saved as a real
@@ -77,7 +240,7 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
         {"tool": "claude", "id": "id-2", "ts": 2, "path": "/x.jsonl", "cwd": "/home/hunt"},
         {"tool": "kimi", "id": "id-3", "ts": 1, "dir": "/y"},
     ]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: fake_candidates)
     monkeypatch.setattr(sessions, "claude_snippet", lambda path: "irrelevant chat")
     monkeypatch.setattr(sessions, "kimi_snippet", lambda d: "irrelevant chat")
 
@@ -113,7 +276,7 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
 def test_cmd_search_kimi_still_uses_argv(monkeypatch):
     """kimi -p requires an argument and does not read stdin, so it must keep
     receiving the prompt as the last argv element."""
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -139,7 +302,7 @@ def test_cmd_search_kimi_still_uses_argv(monkeypatch):
 
 
 def test_cmd_search_uses_requested_judge_tool(monkeypatch):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -162,7 +325,7 @@ def test_cmd_search_uses_requested_judge_tool(monkeypatch):
 
 
 def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -194,7 +357,7 @@ def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
 
 
 def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -217,7 +380,7 @@ def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys
 
 
 def test_cmd_search_missing_judge_binary_reports_cleanly(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -236,7 +399,7 @@ def test_cmd_search_missing_judge_binary_reports_cleanly(monkeypatch, capsys):
 
 
 def test_cmd_search_no_candidates(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: [])
 
     search.cmd_search(["topic"])
 
@@ -265,7 +428,7 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch):
     found) -- a 'lost in a long list' recall failure. Candidates must be
     split into CHUNK_SIZE-sized batches, each judged independently."""
     n = search.CHUNK_SIZE * 2 + 30  # 3 chunks: 100, 100, 30
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
     seen_sizes = []
@@ -292,7 +455,7 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
     chunks must map back to the correct global candidate, not collide with
     chunk 1's numbering."""
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: _fake_candidates(n))
     rendered = _stub_resolve_and_render(monkeypatch)
     monkeypatch.setattr(search, "snippet_for", lambda r: "")
 
@@ -321,7 +484,7 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
 
 def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys):
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: _fake_candidates(n))
     rendered = _stub_resolve_and_render(monkeypatch)
     monkeypatch.setattr(search, "snippet_for", lambda r: "")
 
@@ -353,7 +516,7 @@ def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys
 
 def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch):
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
     class Fail:
@@ -372,7 +535,7 @@ def test_cmd_search_single_small_batch_no_batch_label(monkeypatch, capsys):
     """With <= CHUNK_SIZE candidates there's only one chunk -- the status
     line shouldn't talk about "batch 1/1", matching the pre-chunking
     output format for the common case."""
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(3))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, **_kw: _fake_candidates(3))
     _stub_resolve_and_render(monkeypatch)
 
     class FakeResult:
