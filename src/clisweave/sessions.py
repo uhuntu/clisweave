@@ -124,6 +124,22 @@ def extract_text_from_content(content, text_types=("text",)):
     return None
 
 
+TRIVIAL_TITLES = {
+    "yes", "no", "ok", "okay", "sure", "yep", "yeah", "nope", "please",
+    "continue", "go ahead", "do it", "thanks", "thank you", "correct",
+    "proceed", "fine", "alright", "got it", "sounds good", "lgtm",
+}
+
+
+def is_trivial_title(text):
+    """A bare acknowledgement makes an uninformative session title -- e.g. a
+    session whose first *text* message is a one-word reply ("Yes") to an
+    earlier screenshot the title-extractor can't read. Callers should prefer
+    the next substantive message within the same scan window when one of
+    these turns up first, falling back to it only if nothing better exists."""
+    return text.strip().lower().strip(".!?") in TRIVIAL_TITLES
+
+
 def sample_stride(texts, limit):
     """Evenly-spaced sample across the full list, not just the first
     `limit`. A conversation often covers several sequential topics before
@@ -193,11 +209,18 @@ def claude_snippet(path, max_messages=12, max_chars=800):
 
 
 def claude_title_and_cwd(path, cwd_fallback):
-    """Scan a session's jsonl once for both a title (first user message)
-    and the real cwd (more reliable than guessing from the project
-    directory name, which can't distinguish literal dashes in a path
-    from directory separators)."""
+    """Scan a session's jsonl once for both a title (first substantive user
+    message) and the real cwd (more reliable than guessing from the project
+    directory name, which can't distinguish literal dashes in a path from
+    directory separators).
+
+    A bare acknowledgement ("Yes") is skipped in favor of the next message
+    within the scan window -- it's frequently a reply to an earlier
+    screenshot or other non-text content this scan can't read, and makes for
+    an uninformative title. It's still used as a fallback if nothing more
+    substantive turns up."""
     title = "(no title)"
+    fallback_title = None
     cwd = None
     try:
         with open(path, encoding="utf-8") as fh:
@@ -213,10 +236,18 @@ def claude_title_and_cwd(path, cwd_fallback):
                 if title != "(no title)" or d.get("type") != "user":
                     continue
                 text = extract_text_from_content(d.get("message", {}).get("content"))
-                if text:
-                    title = text.strip().replace("\n", " ")[:70]
+                if not text:
+                    continue
+                text = text.strip().replace("\n", " ")[:70]
+                if is_trivial_title(text):
+                    if fallback_title is None:
+                        fallback_title = text
+                    continue
+                title = text
     except FileNotFoundError:
         pass
+    if title == "(no title)":
+        title = fallback_title or "(no title)"
     return title, (cwd or cwd_fallback)
 
 
@@ -315,7 +346,7 @@ CODEX_BOILERPLATE_PREFIXES = (
 )
 
 
-def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000):
+def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000, sample=True):
     """Shared scan for codex_rollout_title/codex_rollout_snippet: genuine
     message texts from a rollout file for the given roles, skipping
     injected boilerplate (AGENTS.md instructions, permission setup,
@@ -325,7 +356,10 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
     treated as boilerplate and skipped entirely, leaving both `ai search`
     and the plain listing with no way to find or label that session).
     Sampled evenly across the whole conversation via sample_stride, not
-    just the first max_messages -- see its docstring."""
+    just the first max_messages -- see its docstring. Pass sample=False for
+    callers that want literally the earliest messages, in order (e.g. title
+    extraction, which wants to look past a trivial first reply without
+    jumping elsewhere in the conversation)."""
     texts = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -350,17 +384,24 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                 texts.append(stripped.replace("\n", " "))
     except FileNotFoundError:
         pass
-    return sample_stride(texts, max_messages)
+    return sample_stride(texts, max_messages) if sample else texts[:max_messages]
 
 
 def codex_rollout_title(sid):
     """Fallback title for sessions with no session_index.jsonl entry: the
-    first genuine user message in the rollout file, truncated for display."""
+    first substantive genuine user message in the rollout file, truncated
+    for display. Skips a leading bare acknowledgement ("yes") in favor of
+    the next real message, falling back to it if nothing better exists."""
     path = codex_rollout_path(sid)
     if not path:
         return "(no title)"
-    texts = _codex_genuine_messages(path, max_messages=1, roles=("user",))
-    return texts[0][:70] if texts else "(no title)"
+    texts = _codex_genuine_messages(path, max_messages=5, roles=("user",), sample=False)
+    if not texts:
+        return "(no title)"
+    for text in texts:
+        if not is_trivial_title(text):
+            return text[:70]
+    return texts[0][:70]
 
 
 def codex_rollout_snippet(sid, max_messages=12, max_chars=800):
@@ -439,11 +480,15 @@ def kimi_light_records(show_all):
 
 
 def kimi_title(sdir):
+    """First substantive prompt in the session, truncated for display. Skips
+    a leading bare acknowledgement ("yes") in favor of the next real prompt,
+    falling back to it if nothing better exists within the scan window."""
     wire = os.path.join(sdir, "agents", "main", "wire.jsonl")
+    candidates = []
     try:
         with open(wire, encoding="utf-8") as fh:
             for i, line in enumerate(fh):
-                if i > 60:
+                if i > 60 or len(candidates) >= 5:
                     break
                 try:
                     d = json.loads(line)
@@ -452,10 +497,16 @@ def kimi_title(sdir):
                 if d.get("type") == "turn.prompt":
                     for block in d.get("input", []):
                         if isinstance(block, dict) and block.get("type") == "text":
-                            return block.get("text", "").strip().replace("\n", " ")[:70]
+                            text = block.get("text", "").strip().replace("\n", " ")[:70]
+                            if text:
+                                candidates.append(text)
+                            break
     except FileNotFoundError:
         pass
-    return "(no title)"
+    for text in candidates:
+        if not is_trivial_title(text):
+            return text
+    return candidates[0] if candidates else "(no title)"
 
 
 def kimi_snippet(sdir, max_messages=12, max_chars=800):

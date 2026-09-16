@@ -170,6 +170,44 @@ def test_codex_rollout_title_missing_session_returns_placeholder(monkeypatch, tm
     assert sessions.codex_rollout_title("no-such-id") == "(no title)"
 
 
+def test_codex_rollout_title_skips_bare_acknowledgement(monkeypatch, tmp_path):
+    """Regression test: a resumed session's first user message is often a
+    one-word reply ("Yes") to a screenshot or prior context, not something
+    genuinely descriptive. The title should skip past it to the next real
+    message rather than showing "Yes"."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a018ff-5a11-7b2c-9d30-4f67e8a90124"
+    day_dir = codex_home / "sessions" / "2026" / "08" / "14"
+    day_dir.mkdir(parents=True)
+    path = day_dir / f"rollout-2026-08-14T00-00-00-{sid}.jsonl"
+
+    def user_line(text):
+        return json.dumps({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        })
+
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": "/x"}}) + "\n"
+        + user_line("Yes") + "\n"
+        + user_line("investigate the OTA boot loop rollback") + "\n"
+    )
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "investigate the OTA boot loop rollback"
+
+
+def test_codex_rollout_title_falls_back_to_acknowledgement_if_nothing_else(monkeypatch, tmp_path):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a018ff-5a11-7b2c-9d30-4f67e8a90125"
+    write_codex_rollout(codex_home, sid, cwd="/x", user_text="Yes")
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "Yes"
+
+
 def test_codex_rollout_title_does_not_treat_long_real_messages_as_boilerplate(monkeypatch, tmp_path):
     """Regression test: a real session had a genuine 1304-char task request
     (multiple bullet-pointed change requests) wrongly filtered out by a
@@ -372,6 +410,39 @@ def test_claude_content_list_with_text_block(tmp_path):
     assert title == "the real prompt"
 
 
+def test_claude_title_and_cwd_skips_bare_acknowledgement(tmp_path):
+    """Regression test: a resumed session whose first user message is a
+    screenshot (image content, no text) followed by a one-word reply
+    ("Yes") should title itself from the next real message, not "Yes"."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({
+            "type": "user",
+            "cwd": "/home/hunt",
+            "message": {"content": [{"type": "image"}]},
+        }) + "\n"
+        + json.dumps({
+            "type": "user",
+            "message": {"content": "Yes"},
+        }) + "\n"
+        + json.dumps({
+            "type": "user",
+            "message": {"content": "investigate the OTA boot loop rollback"},
+        }) + "\n"
+    )
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "investigate the OTA boot loop rollback"
+
+
+def test_claude_title_and_cwd_falls_back_to_acknowledgement_if_nothing_else(tmp_path):
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "Yes"}}) + "\n"
+    )
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "Yes"
+
+
 def test_sample_stride_covers_latter_middle_of_long_list():
     """Regression test: a real 104-message session had its relevant
     content at message 71 -- neither a first-N-only scan nor a first+last
@@ -490,6 +561,25 @@ def test_kimi_snippet_includes_assistant_response_text(tmp_path):
     snippet = sessions.kimi_snippet(str(sess_dir))
     assert "decompiled the SetupWizard APK" in snippet
     assert "let me check" not in snippet  # think parts are not real response text
+
+
+def test_kimi_title_skips_bare_acknowledgement(tmp_path):
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    wire = sess_dir / "agents" / "main" / "wire.jsonl"
+    wire.write_text(
+        json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "Yes"}]}) + "\n"
+        + json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "check my Thunderbird setup"}]}) + "\n"
+    )
+    assert sessions.kimi_title(str(sess_dir)) == "check my Thunderbird setup"
+
+
+def test_kimi_title_falls_back_to_acknowledgement_if_nothing_else(tmp_path):
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    wire = sess_dir / "agents" / "main" / "wire.jsonl"
+    wire.write_text(json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "Yes"}]}) + "\n")
+    assert sessions.kimi_title(str(sess_dir)) == "Yes"
 
 
 def test_kimi_snippet_finds_topic_past_old_120_line_cutoff(tmp_path):
