@@ -124,6 +124,22 @@ def extract_text_from_content(content, text_types=("text",)):
     return None
 
 
+TRIVIAL_TITLES = {
+    "yes", "no", "ok", "okay", "sure", "yep", "yeah", "nope", "please",
+    "continue", "go ahead", "do it", "thanks", "thank you", "correct",
+    "proceed", "fine", "alright", "got it", "sounds good", "lgtm",
+}
+
+
+def is_trivial_title(text):
+    """A bare acknowledgement makes an uninformative session title -- e.g. a
+    session whose first *text* message is a one-word reply ("Yes") to an
+    earlier screenshot the title-extractor can't read. Callers should prefer
+    the next substantive message within the same scan window when one of
+    these turns up first, falling back to it only if nothing better exists."""
+    return text.strip().lower().strip(".!?") in TRIVIAL_TITLES
+
+
 def sample_stride(texts, limit):
     """Evenly-spaced sample across the full list, not just the first
     `limit`. A conversation often covers several sequential topics before
@@ -321,14 +337,15 @@ def claude_title_and_cwd(path, cwd_fallback):
     from directory separators).
 
     "Genuine" matters: Claude Code's first user record is often not a real
-    request but injected content or a pasted terminal transcript -- a real
-    listing showed titles like `<scheduled-task name="kimi-timer-...">`
-    (the scheduled-task reminder that woke the session) and
-    `(hunt@host)-[~] $ cd Downloads ...` (a shell transcript pasted in for
-    context). Those are skipped, like codex's injected boilerplate, so the
-    title is the first thing the user actually asked. If every message in
-    the window is one of those, the first one is used anyway -- a noisy
-    title still beats an unrecognizable `(no title)` row."""
+    request but injected content, a pasted terminal transcript, or a bare
+    acknowledgement ("Yes") replying to an earlier screenshot this scan
+    can't read -- a real listing showed titles like
+    `<scheduled-task name="kimi-timer-...">` (the scheduled-task reminder
+    that woke the session), `(hunt@host)-[~] $ cd Downloads ...` (a pasted
+    shell transcript), and "Yes". Those are skipped, like codex's injected
+    boilerplate, so the title is the first thing the user actually asked.
+    If every message in the window is one of those, the first one is used
+    anyway -- a noisy title still beats an unrecognizable `(no title)` row."""
     fallback = None
     title = None
     cwd = None
@@ -354,7 +371,7 @@ def claude_title_and_cwd(path, cwd_fallback):
                 # Shell-prompt detection needs the *first* line as written;
                 # `stripped` has newlines flattened, which would let a later
                 # line's prompt match and reject a real request.
-                if title is None and not _is_injected_or_pasted(text):
+                if title is None and not _is_injected_or_pasted(text) and not is_trivial_title(stripped):
                     title = stripped[:70]
     except FileNotFoundError:
         pass
@@ -490,7 +507,7 @@ def _codex_tool_call_text(payload):
 
 
 def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=20000,
-                            include_tool_calls=False, skip_boilerplate=True):
+                            include_tool_calls=False, skip_boilerplate=True, sample=True):
     """Shared scan for codex_rollout_title/codex_rollout_snippet: genuine
     message texts from a rollout file for the given roles, skipping
     injected boilerplate (AGENTS.md instructions, permission setup,
@@ -500,7 +517,10 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
     treated as boilerplate and skipped entirely, leaving both `ai search`
     and the plain listing with no way to find or label that session).
     Sampled evenly across the whole conversation via sample_stride, not
-    just the first max_messages -- see its docstring.
+    just the first max_messages -- see its docstring. Pass sample=False for
+    callers that want literally the earliest messages, in order (e.g. title
+    extraction, which wants to look past a trivial first reply without
+    jumping elsewhere in the conversation).
 
     scan_limit caps how many rollout lines are read; rollouts grow very
     long in agentic sessions (a real one ran to 4700+ lines), and a topic
@@ -542,12 +562,14 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                 texts.append(stripped.replace("\n", " "))
     except FileNotFoundError:
         pass
-    return sample_stride(texts, max_messages)
+    return sample_stride(texts, max_messages) if sample else texts[:max_messages]
 
 
 def codex_rollout_title(sid):
     """Fallback title for sessions with no session_index.jsonl entry: the
-    first genuine user message in the rollout file, truncated for display.
+    first substantive genuine user message in the rollout file, truncated
+    for display. Skips a leading bare acknowledgement ("yes") in favor of
+    the next real message, falling back to it if nothing better exists.
     A session made up entirely of injected or seeded text has no genuine
     message at all; the ones a tool started for itself (clisweave's seeds,
     codex's approval review) are still named, so they don't all collapse
@@ -556,12 +578,16 @@ def codex_rollout_title(sid):
     path = codex_rollout_path(sid)
     if not path:
         return "(no title)"
-    texts = _codex_genuine_messages(path, max_messages=1, roles=("user",))
+    texts = _codex_genuine_messages(path, max_messages=5, roles=("user",), sample=False)
     if texts:
+        for text in texts:
+            if not is_trivial_title(text):
+                return _title_or_placeholder(text[:70], "")
         return _title_or_placeholder(texts[0][:70], "")
     # Codex's <environment_context> dump sits in front of the rest, so the
     # seed isn't necessarily the first message: look past it.
-    for seed in _codex_genuine_messages(path, max_messages=200, roles=("user",), skip_boilerplate=False):
+    for seed in _codex_genuine_messages(path, max_messages=200, roles=("user",),
+                                        skip_boilerplate=False, sample=False):
         if seed.startswith(SEED_PREFIXES):
             return _title_or_placeholder("", seed[:70])
     return "(no title)"
@@ -647,10 +673,12 @@ def kimi_title(sdir):
     """First *genuine* user prompt in the session's wire log.
 
     Skips injected/pasted prompts the same way claude_title_and_cwd does
-    (see its docstring): a kimi session can just as easily be opened by a
-    reminder or by a pasted terminal transcript as by a real question, and
-    a title taken from those is unrecognizable in the listing. Falls back to
-    the first prompt when every one in the window is noise."""
+    (see its docstring), including a bare acknowledgement ("yes") replying
+    to content this scan can't read: a kimi session can just as easily be
+    opened by a reminder, a pasted terminal transcript, or a one-word reply
+    as by a real question, and a title taken from those is unrecognizable in
+    the listing. Falls back to the first prompt when every one in the
+    window is noise."""
     wire = os.path.join(sdir, "agents", "main", "wire.jsonl")
     fallback = None
     title = None
@@ -676,7 +704,7 @@ def kimi_title(sdir):
                         fallback = stripped[:70]
                     # as with claude: the un-flattened text, so a later
                     # line's prompt can't reject a real opening question
-                    if title is None and not _is_injected_or_pasted(raw):
+                    if title is None and not _is_injected_or_pasted(raw) and not is_trivial_title(stripped):
                         title = stripped[:70]
                     break
     except FileNotFoundError:
