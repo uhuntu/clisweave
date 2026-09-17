@@ -97,9 +97,15 @@ To switch agents, put the target tool after the row number: `ai 3 codex`. Cliswe
 
 ### How `ai search` works
 
-Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)". So `ai search` doesn't grep for your exact words; it builds one prompt listing every candidate session's tool, cwd, title, and a short content snippet, and asks an LLM (`claude -p` by default) to pick out which numbers are actually relevant to your topic. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi` account bills them) every time you run it.
+`ai search` runs two complementary passes:
 
-It reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
+1. **Exact pre-pass** — a case-insensitive substring scan of every candidate session's full on-disk content (transcripts, plus kimi background-task output logs). Zero LLM cost, perfect recall for whatever string you typed. Results print under `exact matches`.
+
+2. **Semantic pass** — the LLM judge. Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)", and the relevant sessions may never use your exact words. So each candidate's tool, cwd, title, and a short content snippet go into one prompt, and an LLM (`claude -p` by default) picks out which numbers are relevant. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi` account bills them) every time you run it. Results print under `semantic matches`.
+
+The exact pass exists because the semantic pass reasons over small *sampled* snippets, and a term that only appears in unsampled messages, tool calls, or past the snippet scan cap is invisible to the judge — a real `aria2c` search missed 4 sessions that grepping found immediately. The two passes union (a session listed as exact is not repeated under semantic), and both count for `ai resume <N>`.
+
+The judge reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
 
 ### Normalized flags (`ai <tool> ...`)
 

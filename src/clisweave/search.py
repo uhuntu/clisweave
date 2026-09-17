@@ -1,4 +1,17 @@
-"""ai search - ask an LLM which past sessions are relevant to a topic.
+"""ai search - find past sessions relevant to a topic.
+
+Two complementary passes over the same candidate list:
+
+1. A literal pre-pass: case-insensitive substring scan of every session's
+   full on-disk content. Perfect recall for the exact string typed, zero
+   LLM cost. This is not optional decoration: the LLM pass reasons over
+   small sampled snippets, and a term that only appears in unsampled
+   messages, tool calls, or past the snippet scan cap is invisible to it
+   (real `aria2c` search: 4 such misses across codex/kimi stores).
+
+2. An LLM judge over title + short content snippets, for semantic /
+   paraphrase topics the literal pass cannot catch ("the nfc frequency
+   lock issue" should find sessions that never use those exact words).
 
 Batched calls, not one call per session: doing that would mean up to
 hundreds of separate LLM invocations (slow, and real token cost each
@@ -232,6 +245,11 @@ def cmd_search(argv):
     chunks = [entries[i:i + CHUNK_SIZE] for i in range(0, len(entries), CHUNK_SIZE)]
     n_chunks = len(chunks)
 
+    print(f"Scanning {len(candidates)} sessions for exact matches: {topic!r} ...", file=sys.stderr, flush=True)
+    exact_records = sessions.literal_matches(candidates, topic)
+    exact_ids = {(r["tool"], r["id"]) for r in exact_records}
+    exact_rows = [row for r, row in zip(candidates, rows) if (r["tool"], r["id"]) in exact_ids]
+
     def process_chunk(chunk_idx, selected_judge=judge):
         chunk = chunks[chunk_idx]
         offset = chunk_idx * CHUNK_SIZE
@@ -253,19 +271,22 @@ def cmd_search(argv):
         return {offset + n for n in picked_local}, used_judge
 
     matched_indices = set()
+    used_judge = judge
     if n_chunks == 1:
         try:
-            matched_indices, _ = process_chunk(0)
+            matched_indices, used_judge = process_chunk(0)
         except JudgeError as e:
-            sys.exit(e.code)
+            if exact_ids:
+                print("ai search: semantic search failed; showing exact matches only", file=sys.stderr)
+            else:
+                sys.exit(e.code)
     else:
         failures = 0
         # Let one real batch choose the usable judge before fanning out. This
         # avoids launching every chunk against a judge that is at its session
         # limit or otherwise unavailable.
-        selected_judge = judge
         try:
-            first_matches, selected_judge = process_chunk(0)
+            first_matches, used_judge = process_chunk(0)
             matched_indices |= first_matches
         except JudgeError:
             failures += 1
@@ -274,7 +295,7 @@ def cmd_search(argv):
             max_workers=min(MAX_CONCURRENT_BATCHES, n_chunks - 1)
         ) as pool:
             futures = [
-                pool.submit(process_chunk, i, selected_judge)
+                pool.submit(process_chunk, i, used_judge)
                 for i in range(1, n_chunks)
             ]
             for fut in concurrent.futures.as_completed(futures):
@@ -284,15 +305,30 @@ def cmd_search(argv):
                 except JudgeError:
                     failures += 1
         if failures == n_chunks:
-            print(f"ai search: all {n_chunks} batches failed", file=sys.stderr)
-            sys.exit(1)
+            if exact_ids:
+                print(f"ai search: all {n_chunks} semantic batches failed; showing exact matches only", file=sys.stderr)
+            else:
+                print(f"ai search: all {n_chunks} batches failed", file=sys.stderr)
+                sys.exit(1)
         if failures:
             print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
 
     matched = [row for n, row in enumerate(rows, start=1) if n in matched_indices]
+    # Already reported in the exact section -- don't list a session twice.
+    semantic = [row for row in matched if (row[0], row[1]) not in exact_ids]
 
-    if not matched:
+    if not exact_rows and not semantic:
         print("No relevant sessions found.")
         return
 
-    sessions.render_rows(matched)
+    # One cache write for the union in printed order, so `ai resume <N>`
+    # numbers stay valid across both sections.
+    sessions.write_list_cache(
+        [{"tool": tool, "id": full_id} for tool, full_id, *_ in exact_rows + semantic]
+    )
+    if exact_rows:
+        print(f"exact matches for {topic!r} (literal, case-insensitive):")
+        sessions.render_rows(exact_rows, write_cache=False)
+    if semantic:
+        print(f"semantic matches (judge: {used_judge}):")
+        sessions.render_rows(semantic, write_cache=False)

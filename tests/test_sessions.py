@@ -489,7 +489,10 @@ def test_kimi_snippet_includes_assistant_response_text(tmp_path):
 
     snippet = sessions.kimi_snippet(str(sess_dir))
     assert "decompiled the SetupWizard APK" in snippet
-    assert "let me check" not in snippet  # think parts are not real response text
+    # think parts ARE included now: a real session's only mention of the
+    # searched term lived exclusively in think blocks, so the judge had no
+    # way to ever see it. Verbose thinking is acceptable snippet noise.
+    assert "let me check" in snippet
 
 
 def test_kimi_snippet_finds_topic_past_old_120_line_cutoff(tmp_path):
@@ -1081,3 +1084,183 @@ def test_exec_or_die_missing_binary_reports_cleanly(monkeypatch, capsys):
         sessions.exec_or_die(["not-a-real-binary", "--flag"])
     assert exc_info.value.code == 127
     assert "not found on PATH" in capsys.readouterr().err
+
+
+# ---------- literal_matches ----------
+
+def _claude_record(path, sid="claude-1"):
+    return {"tool": "claude", "id": sid, "path": str(path)}
+
+
+def test_literal_matches_finds_term_case_insensitively(tmp_path):
+    f = tmp_path / "s.jsonl"
+    f.write_text(json.dumps({"type": "user", "message": {"content": "downloading with ARIA2C -x8"}}) + "\n")
+
+    assert [r["id"] for r in sessions.literal_matches([_claude_record(f)], "aria2c")] == ["claude-1"]
+    assert [r["id"] for r in sessions.literal_matches([_claude_record(f)], "ARIA2C")] == ["claude-1"]
+    assert sessions.literal_matches([_claude_record(f)], "rsync") == []
+
+
+def test_literal_matches_tolerates_missing_files(tmp_path):
+    assert sessions.literal_matches([_claude_record(tmp_path / "gone.jsonl")], "aria2c") == []
+
+
+def test_literal_matches_scans_kimi_wire(tmp_path):
+    sdir = tmp_path / "session"
+    (sdir / "agents" / "main").mkdir(parents=True)
+    (sdir / "agents" / "main" / "wire.jsonl").write_text(
+        json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "used aria2c here"}]}) + "\n"
+    )
+    rec = {"tool": "kimi", "id": "k1", "dir": str(sdir)}
+    assert [r["id"] for r in sessions.literal_matches([rec], "aria2c")] == ["k1"]
+
+
+def test_literal_matches_scans_kimi_background_task_output_logs(tmp_path):
+    """kimi streams bash-task output to tasks/<id>/output.log, which stays
+    OUT of wire.jsonl -- a real session mentioned the searched term only in
+    such a log and was unfindable before the literal pre-pass."""
+    sdir = tmp_path / "session"
+    (sdir / "agents" / "main" / "tasks" / "bash-9").mkdir(parents=True)
+    (sdir / "agents" / "main" / "wire.jsonl").write_text(
+        json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "run the build"}]}) + "\n"
+    )
+    (sdir / "agents" / "main" / "tasks" / "bash-9" / "output.log").write_text(
+        "12:00:01 aria2c --continue --max-tries=20 ruby.tar.gz\n"
+    )
+    rec = {"tool": "kimi", "id": "k2", "dir": str(sdir)}
+    assert [r["id"] for r in sessions.literal_matches([rec], "aria2c")] == ["k2"]
+
+
+def test_literal_matches_codex_rollout(monkeypatch, tmp_path):
+    rollout = tmp_path / "r.jsonl"
+    rollout.write_text(json.dumps({
+        "type": "response_item",
+        "payload": {"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "grab it with aria2c"}]},
+    }) + "\n")
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: str(rollout))
+
+    rec = {"tool": "codex", "id": "c1"}
+    assert [r["id"] for r in sessions.literal_matches([rec], "aria2c")] == ["c1"]
+    assert sessions.literal_matches([rec], "wget") == []
+
+
+# ---------- sample_stride ----------
+
+def test_sample_stride_always_includes_final_message():
+    """Regression: a real session kept its only mention of the search term in
+    the very last of 248 messages (index 247); pure stride sampling landed at
+    227 and the mention never reached the judge."""
+    texts = [f"m{i}" for i in range(248)]
+    sampled = sessions.sample_stride(texts, 12)
+    assert sampled[-1] == "m247"
+    assert len(sampled) == 13  # 12 stride picks + the forced final message
+
+
+def test_sample_stride_small_lists_unchanged():
+    texts = ["a", "b", "c"]
+    assert sessions.sample_stride(texts, 12) == texts
+    assert sessions.sample_stride(texts, 1) == ["a"]
+
+
+# ---------- kimi_snippet: think parts and tool results ----------
+
+def _write_wire(sdir, events):
+    wire = sdir / "agents" / "main"
+    wire.mkdir(parents=True, exist_ok=True)
+    (wire / "wire.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+
+def test_kimi_snippet_includes_think_and_tool_result_text(tmp_path):
+    """Regression: a real session's only mention of the searched term lived
+    exclusively in think parts and tool results, invisible to a text-only
+    scan, so the judge never saw it."""
+    _write_wire(tmp_path, [
+        {"type": "turn.prompt", "input": [{"type": "text", "text": "build ruby"}]},
+        {"type": "context.append_loop_event",
+         "event": {"type": "content.part", "part": {"type": "think",
+                    "think": "the ARIA2C download of ruby is stalled"}}},
+        {"type": "context.append_loop_event",
+         "event": {"type": "tool.result", "result": {"output": "aria2c --allow-overwrite ruby.tar.gz\nerror: 503"}}},
+    ])
+
+    snippet = sessions.kimi_snippet(str(tmp_path))
+    assert "ARIA2C" in snippet
+    assert "aria2c --allow-overwrite" in snippet
+
+
+def test_kimi_snippet_still_includes_prompt_and_surface_text(tmp_path):
+    _write_wire(tmp_path, [
+        {"type": "turn.prompt", "input": [{"type": "text", "text": "hello there"}]},
+        {"type": "context.append_loop_event",
+         "event": {"type": "content.part", "part": {"type": "text", "text": "hi back"}}},
+    ])
+
+    snippet = sessions.kimi_snippet(str(tmp_path))
+    assert "hello there" in snippet
+    assert "hi back" in snippet
+
+
+# ---------- codex snippets: tool calls, deep transcripts ----------
+
+def test_codex_snippet_includes_tool_call_commands(monkeypatch, tmp_path):
+    """Regression: a real session mentioned the searched tool exclusively
+    inside exec_command calls; message-only snippets never showed it."""
+    rollout = tmp_path / "r.jsonl"
+    rollout.write_text("".join(json.dumps(line) + "\n" for line in [
+        {"type": "session_meta", "payload": {"id": "s", "cwd": "/x"}},
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "download the image"}]}},
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec_command",
+            "input": 'const r = await tools.exec_command({cmd:"command -v aria2c || true; ls","workdir":"/x"})'}},
+    ]))
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: str(rollout))
+
+    assert "command -v aria2c || true; ls" in sessions.codex_rollout_snippet("s")
+
+
+def test_codex_tool_call_text_extracts_command():
+    t = sessions._codex_tool_call_text
+    assert t({"arguments": '{"command": "ls -la"}'}) == "ls -la"
+    assert t({"input": 'x({cmd:"aria2c -x8 --continue"})'}) == "aria2c -x8 --continue"
+    assert t({"input": "plain raw input"}) == "plain raw input"
+    assert t({}) == ""
+    assert t({"arguments": "  "}) == ""
+
+
+def test_codex_genuine_messages_reads_past_line_2000(tmp_path):
+    """Regression: a real 4715-line rollout mentioned the searched term only
+    past line 4642; the 2000-line scan cap made it invisible."""
+    lines = [
+        json.dumps({"type": "response_item", "payload": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": f"filler {i}"}]}})
+        for i in range(2100)
+    ]
+    lines.append(json.dumps({"type": "response_item", "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": "final aria2c mention"}]}}))
+
+    path = tmp_path / "long.jsonl"
+    path.write_text("".join(l + "\n" for l in lines))
+
+    texts = sessions._codex_genuine_messages(str(path), max_messages=10 ** 6, roles=("user",))
+    assert texts[-1] == "final aria2c mention"
+
+
+def test_codex_title_ignores_tool_calls(monkeypatch, tmp_path):
+    """Tool calls are snippet material only -- titles stay first-genuine-user-message."""
+    rollout = tmp_path / "r.jsonl"
+    rollout.write_text("".join(json.dumps(line) + "\n" for line in [
+        {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec_command",
+            "input": 'x({cmd:"aria2c"})'}},
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "the real request"}]}},
+    ]))
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: str(rollout))
+
+    assert sessions.codex_rollout_title("s") == "the real request"

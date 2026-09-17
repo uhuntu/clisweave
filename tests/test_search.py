@@ -118,7 +118,7 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
     ))
 
     rendered = []
-    monkeypatch.setattr(sessions, "render_rows", lambda rows: rendered.append(rows))
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: rendered.append(rows))
 
     class FakeResult:
         returncode = 0
@@ -315,7 +315,7 @@ def _stub_resolve_and_render(monkeypatch):
         r["tool"], r["id"], "1h ago", r["id"][:8], "?", r.get("title", "(no title)"),
     ))
     rendered = []
-    monkeypatch.setattr(sessions, "render_rows", lambda rows: rendered.append(rows))
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: rendered.append(rows))
     return rendered
 
 
@@ -484,3 +484,146 @@ def test_cmd_search_single_small_batch_no_batch_label(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "batch" not in err.lower()
     assert "3 sessions against" in err
+
+
+# ---------- literal pre-pass ----------
+
+def _candidate_with_term(tmp_path, tool, sid, text):
+    if tool == "claude":
+        f = tmp_path / f"{sid}.jsonl"
+        f.write_text(json.dumps({"type": "user", "message": {"content": text}}) + "\n")
+        return {"tool": "claude", "id": sid, "ts": 1, "path": str(f), "cwd": "/x"}
+    sdir = tmp_path / sid
+    (sdir / "agents" / "main").mkdir(parents=True)
+    (sdir / "agents" / "main" / "wire.jsonl").write_text(
+        json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": text}]}) + "\n"
+    )
+    return {"tool": "kimi", "id": sid, "ts": 1, "dir": str(sdir), "cwd": "/x"}
+
+
+def _capture_output_sections(monkeypatch):
+    rendered = []
+    monkeypatch.setattr(
+        sessions, "render_rows",
+        lambda rows, write_cache=True: rendered.append((list(rows), write_cache)),
+    )
+    cached = []
+    monkeypatch.setattr(sessions, "write_list_cache", lambda entries: cached.append(list(entries)))
+    return rendered, cached
+
+
+class _NoneResult:
+    returncode = 0
+    stdout = "none"
+    stderr = ""
+
+
+def test_cmd_search_shows_exact_matches_in_own_section(monkeypatch, capsys, tmp_path):
+    exact = _candidate_with_term(tmp_path, "claude", "hit-1", "grabbed it via ARIA2C")
+    other = {"tool": "codex", "id": "miss-1", "ts": 2, "title": "unrelated"}
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact, other])
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], r.get("cwd", "?"), r.get("title", "(no title)"),
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    rendered, cached = _capture_output_sections(monkeypatch)
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: _NoneResult())
+
+    search.cmd_search(["aria2c"])
+
+    out = capsys.readouterr().out
+    assert "exact matches for 'aria2c' (literal, case-insensitive):" in out
+    assert "semantic matches" not in out  # judge picked nothing
+    assert len(rendered) == 1
+    assert [row[1] for row in rendered[0][0]] == ["hit-1"]
+    assert rendered[0][1] is False  # cache written once, by cmd_search
+    assert [[e["id"] for e in entries] for entries in cached] == [["hit-1"]]
+
+
+def test_cmd_search_dedupes_judge_pick_already_exact(monkeypatch, capsys, tmp_path):
+    exact = _candidate_with_term(tmp_path, "kimi", "hit-1", "aria2c -x8")
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    rendered, cached = _capture_output_sections(monkeypatch)
+
+    class PicksIt(_NoneResult):
+        stdout = "1"  # judge also picks the (only) candidate
+
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: PicksIt())
+
+    search.cmd_search(["aria2c"])
+
+    out = capsys.readouterr().out
+    assert "exact matches" in out
+    assert "semantic matches" not in out  # no double-listing
+    assert len(rendered) == 1
+    assert [[e["id"] for e in entries] for entries in cached] == [["hit-1"]]
+
+
+def test_cmd_search_shows_both_sections_and_unioned_cache(monkeypatch, capsys, tmp_path):
+    exact = _candidate_with_term(tmp_path, "claude", "hit-1", "aria2c here")
+    semantic_only = {"tool": "codex", "id": "sem-1", "ts": 2, "title": "talks about resumable downloads"}
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact, semantic_only])
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    rendered, cached = _capture_output_sections(monkeypatch)
+
+    class PicksSecond(_NoneResult):
+        stdout = "2"  # judge picks candidate #2 (no literal hit)
+
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: PicksSecond())
+
+    search.cmd_search(["aria2c"])
+
+    out = capsys.readouterr().out
+    assert "exact matches for 'aria2c'" in out
+    assert "semantic matches (judge: claude):" in out
+    assert [row[1] for row in rendered[0][0]] == ["hit-1"]
+    assert [row[1] for row in rendered[1][0]] == ["sem-1"]
+    # one cache write covering both sections in printed order
+    assert [[e["id"] for e in entries] for entries in cached] == [["hit-1", "sem-1"]]
+
+
+def test_cmd_search_judge_failure_still_shows_exact(monkeypatch, capsys, tmp_path):
+    exact = _candidate_with_term(tmp_path, "claude", "hit-1", "aria2c")
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    rendered, _cached = _capture_output_sections(monkeypatch)
+
+    def judge_fails(prompt, n, judge, judge_explicit, label):
+        raise search.JudgeError(1)
+
+    monkeypatch.setattr(search, "run_judge_with_fallback", judge_fails)
+
+    search.cmd_search(["--judge", "claude", "aria2c"])  # must not sys.exit
+
+    out = capsys.readouterr().out
+    assert "exact matches for 'aria2c'" in out
+    assert "semantic matches" not in out
+    assert [row[1] for row in rendered[0][0]] == ["hit-1"]
+
+
+def test_cmd_search_no_matches_at_all(monkeypatch, capsys):
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: _NoneResult())
+
+    search.cmd_search(["aria2c"])
+
+    assert "No relevant sessions found." in capsys.readouterr().out

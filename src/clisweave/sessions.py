@@ -132,11 +132,15 @@ def sample_stride(texts, limit):
     a first-N-only scan nor a first+last split reliably lands there, but a
     stride across the whole conversation does (index 69, one stride step
     away). `limit` <= 2 keeps plain first-N behavior (used for title
-    extraction, which wants literally the first message)."""
+    extraction, which wants literally the first message). The final message
+    is always included: conversations often end on the topic currently
+    being searched for, and pure stride sampling can land one step short
+    of it (a real session kept its only mention of the term in the very
+    last of 248 messages, index 247, never sampled)."""
     if len(texts) <= limit or limit <= 2:
         return texts[:limit]
     step = len(texts) / limit
-    indices = sorted({int(i * step) for i in range(limit)})
+    indices = sorted({int(i * step) for i in range(limit)} | {len(texts) - 1})
     return [texts[i] for i in indices]
 
 
@@ -176,7 +180,7 @@ def claude_snippet(path, max_messages=12, max_chars=800):
     try:
         with open(path, encoding="utf-8") as fh:
             for i, line in enumerate(fh):
-                if i > 2000:
+                if i > 20000:
                     break
                 try:
                     d = json.loads(line)
@@ -315,7 +319,36 @@ CODEX_BOILERPLATE_PREFIXES = (
 )
 
 
-def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000):
+def _codex_tool_call_text(payload):
+    """Human-meaningful text from a function_call/custom_tool_call payload:
+    the command for exec-style calls, else the raw arguments/input."""
+    for key in ("arguments", "input"):
+        raw = payload.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            cmd = parsed.get("command") or parsed.get("cmd")
+            if isinstance(cmd, str) and cmd.strip():
+                return cmd.strip()
+        # Non-JSON call wrappers (a real rollout's custom_tool_call inputs
+        # are JS: `const r = await tools.exec_command({cmd:"...", ...})`) --
+        # pull out the cmd string so the snippet shows the command itself
+        # rather than 60 chars of wrapper that bury it past the budget.
+        m = re.search(r'cmd\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+        if m:
+            return (m.group(1)
+                    .replace('\\"', '"').replace("\\n", "\n")
+                    .replace("\\t", "\t").replace("\\\\", "\\"))
+        return raw.strip()
+    return ""
+
+
+def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=20000,
+                            include_tool_calls=False):
     """Shared scan for codex_rollout_title/codex_rollout_snippet: genuine
     message texts from a rollout file for the given roles, skipping
     injected boilerplate (AGENTS.md instructions, permission setup,
@@ -325,7 +358,13 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
     treated as boilerplate and skipped entirely, leaving both `ai search`
     and the plain listing with no way to find or label that session).
     Sampled evenly across the whole conversation via sample_stride, not
-    just the first max_messages -- see its docstring."""
+    just the first max_messages -- see its docstring.
+
+    scan_limit caps how many rollout lines are read; rollouts grow very
+    long in agentic sessions (a real one ran to 4700+ lines), and a topic
+    can first appear in the last stretch. The cap only guards against
+    runaway files, so it is generous -- 2000 demonstrably truncated real
+    sessions and lost matches."""
     texts = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -339,6 +378,17 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                 if d.get("type") != "response_item":
                     continue
                 payload = d.get("payload", {})
+                if payload.get("type") in ("function_call", "custom_tool_call"):
+                    # Shell commands the agent ran: often the ONLY place a
+                    # term appears (a real session mentioned the searched
+                    # tool exclusively inside exec_command calls). Extract
+                    # the command when the input carries one, else keep the
+                    # raw call text.
+                    if include_tool_calls:
+                        text = _codex_tool_call_text(payload)
+                        if text:
+                            texts.append(text.replace("\n", " "))
+                    continue
                 if payload.get("type") != "message" or payload.get("role") not in roles:
                     continue
                 text = extract_text_from_content(payload.get("content"), text_types=("input_text", "text", "output_text"))
@@ -375,7 +425,8 @@ def codex_rollout_snippet(sid, max_messages=12, max_chars=800):
     path = codex_rollout_path(sid)
     if not path:
         return ""
-    texts = _codex_genuine_messages(path, max_messages=max_messages, roles=("user", "assistant"))
+    texts = _codex_genuine_messages(path, max_messages=max_messages, roles=("user", "assistant"),
+                                    include_tool_calls=True)
     return join_with_fair_budget(texts, max_chars)
 
 
@@ -467,6 +518,11 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
     sessions the user often gives short directives while the assistant's
     own prose describes what was actually done and found -- see
     claude_snippet's docstring for a real example of this exact failure.
+    Also includes think-block text and tool-result output, not just
+    surface text: a real session's only mention of the searched term lived
+    exclusively in think parts and tool results, invisible to a
+    text-only scan. (Tool-result output is truncated hard per event --
+    unbounded build/download logs would otherwise drown the snippet.)
     Sampled evenly across the whole conversation via sample_stride, not
     just the first max_messages -- see its docstring."""
     wire = os.path.join(sdir, "agents", "main", "wire.jsonl")
@@ -474,18 +530,31 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
     try:
         with open(wire, encoding="utf-8") as fh:
             for i, line in enumerate(fh):
-                if i > 2000:
+                if i > 20000:
                     break
                 try:
                     d = json.loads(line)
                 except Exception:
                     continue
+                blocks = None
                 if d.get("type") == "turn.prompt":
                     blocks = d.get("input", [])
-                elif d.get("type") == "context.append_loop_event" and d.get("event", {}).get("type") == "content.part":
-                    part = d["event"].get("part", {})
-                    blocks = [part] if part.get("type") == "text" else []
-                else:
+                elif d.get("type") == "context.append_loop_event":
+                    event = d.get("event", {})
+                    if event.get("type") == "content.part":
+                        part = event.get("part", {})
+                        if part.get("type") in ("text", "think"):
+                            t = (part.get("text") or part.get("think") or "").strip()
+                            if t:
+                                texts.append(t.replace("\n", " "))
+                            continue
+                    elif event.get("type") == "tool.result":
+                        result = event.get("result") or {}
+                        output = result.get("output")
+                        if isinstance(output, str) and output.strip():
+                            texts.append(output.strip().replace("\n", " ")[:400])
+                        continue
+                if blocks is None:
                     continue
                 for block in blocks:
                     if isinstance(block, dict) and block.get("type") == "text":
@@ -496,6 +565,50 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
     except FileNotFoundError:
         pass
     return join_with_fair_budget(sample_stride(texts, max_messages), max_chars)
+
+
+def session_literal_scan_files(record):
+    """Every on-disk file whose text counts as this session's content for a
+    literal topic scan: the transcript itself plus, for kimi, background-task
+    output logs (kimi streams bash-task output to tasks/<id>/output.log,
+    which stays OUT of wire.jsonl -- a real session mentioned the searched
+    term only there and was unfindable)."""
+    tool = record["tool"]
+    if tool == "claude":
+        return [record["path"]]
+    if tool == "codex":
+        path = codex_rollout_path(record["id"])
+        return [path] if path else []
+    sdir = record["dir"]
+    files = [os.path.join(sdir, "agents", "main", "wire.jsonl")]
+    files += sorted(glob.glob(os.path.join(sdir, "agents", "main", "tasks", "*", "output.log")))
+    return files
+
+
+def _file_contains(path, needle):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if needle in line.lower():
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def literal_matches(candidates, topic):
+    """Case-insensitive substring scan of candidates' full on-disk content.
+    Perfect recall for whatever exact string was typed, complementing the
+    LLM judge (which reasons over small sampled snippets and can miss a term
+    that only appears in unsampled messages, tool calls, or past the scan
+    cap) -- at zero LLM cost. Deliberately dumb: no stemming, no semantics;
+    the judge stays responsible for those."""
+    needle = topic.lower()
+    hits = []
+    for record in candidates:
+        if any(_file_contains(path, needle) for path in session_literal_scan_files(record)):
+            hits.append(record)
+    return hits
 
 
 def kimi_session_cwd(sid):
@@ -829,14 +942,17 @@ def resolve_row(r):
     return (tool, r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
 
-def render_rows(rows):
+def render_rows(rows, write_cache=True):
     """rows: list of resolve_row()-shaped tuples, already in display order.
-    Prints the numbered table and writes the resume cache."""
+    Prints the numbered table and, unless write_cache=False, writes the
+    resume cache (cmd_search renders two sections and writes the cache once
+    for their union, so both sections' numbers stay resumable)."""
     if not rows:
         print("No sessions found.")
         return
 
-    write_list_cache([{"tool": tool, "id": full_id} for tool, full_id, *_ in rows])
+    if write_cache:
+        write_list_cache([{"tool": tool, "id": full_id} for tool, full_id, *_ in rows])
 
     w_num = len(str(len(rows)))
     w_tool = max(4, max(len(r[0]) for r in rows))
