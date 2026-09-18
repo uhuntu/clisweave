@@ -142,6 +142,40 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
     assert [row[1] for row in rendered[0]] == ["id-1"]
 
 
+def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys):
+    """A judge run's session contains every candidate's text, so it matches
+    nearly any topic; a codex approval review contains the transcript it
+    reviewed. Both are byproducts -- they shouldn't be searched at all."""
+    fake_candidates = [
+        {"tool": "codex", "id": "id-judge", "ts": 3, "title": "ai search judge"},
+        {"tool": "codex", "id": "id-approval", "ts": 2, "title": "codex approval review"},
+        {"tool": "codex", "id": "id-real", "ts": 1, "title": "Find isnfcon"},
+    ]
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
+    ))
+    rendered = []
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: rendered.append(rows))
+
+    prompts = []
+
+    def fake_judge(prompt, n, judge, explicit, label):
+        prompts.append(prompt)
+        return {1}, judge
+
+    monkeypatch.setattr(search, "run_judge_with_fallback", fake_judge)
+
+    search.cmd_search(["nfc"])
+
+    err = capsys.readouterr().err
+    assert "Scanning 1 sessions" in err
+    assert "ai search judge" not in prompts[0]
+    assert "approval review" not in prompts[0]
+    assert "Find isnfcon" in prompts[0]
+    assert [row[1] for row in rendered[0]] == ["id-real"]
+
+
 def test_cmd_search_kimi_still_uses_argv(monkeypatch):
     """kimi -p requires an argument and does not read stdin, so it must keep
     receiving the prompt as the last argv element."""

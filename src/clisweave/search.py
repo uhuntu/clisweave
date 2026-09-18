@@ -267,6 +267,12 @@ def cmd_search(argv):
         return
 
     rows = [sessions.resolve_row(r) for r in candidates]
+    # Same exclusion as `ai sessions`: a session a tool started for itself
+    # isn't a conversation, and its content is other sessions' text -- which
+    # makes it a magnet for spurious matches.
+    keep = [i for i, row in enumerate(rows) if not sessions.is_tool_started_row(row)]
+    candidates = [candidates[i] for i in keep]
+    rows = [rows[i] for i in keep]
     snippets = [snippet_for(r) for r in candidates]
     # row: (tool, full_id, when, short_id, cwd, title)
     entries = [(row[0], row[4], row[5], snippet) for row, snippet in zip(rows, snippets)]
