@@ -507,6 +507,16 @@ CODEX_BOILERPLATE_PREFIXES = (
     # titled `<recommended_plugins> Here is a list of plugins...` -- not a
     # request, and it pushed the real first message off the title.
     "<recommended_plugins>",
+    # The wrapper Codex's clipboard-paste feature injects ahead of a pasted
+    # image: real sessions showed this as the *entire* message text (the
+    # image itself is a separate content block extract_text_from_content
+    # never sees), so it always reads as "# Files mentioned by the
+    # user:\n\n## codex-clipboard-<uuid>.png: ...\n\n## My request:\n\n"
+    # with nothing genuine after it.
+    "# Files mentioned by the user:",
+    # Codex CLI's own startup notice, injected as a "user" message like the
+    # rest of this list despite not being something anyone typed.
+    "Loading latest updates...",
     CODEX_APPROVAL_PROMPT_PREFIX, JUDGE_PROMPT_PREFIX, HANDOFF_PROMPT_PREFIX,
 )
 
@@ -601,12 +611,13 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
 def codex_rollout_title(sid):
     """Fallback title for sessions with no session_index.jsonl entry: the
     first substantive genuine user message in the rollout file, truncated
-    for display. Skips a leading bare acknowledgement ("yes") in favor of
-    the next real message, falling back to it if nothing better exists.
-    A session made up entirely of injected or seeded text has no genuine
-    message at all; the ones a tool started for itself (clisweave's seeds,
-    codex's approval review) are still named, so they don't all collapse
-    into `(no title)`.
+    for display. Skips a leading bare acknowledgement ("yes") and a pasted
+    shell transcript the same way claude_title_and_cwd does, in favor of the
+    next real message, falling back to the first one if nothing better
+    turns up. A session made up entirely of injected or seeded text has no
+    genuine message at all; the ones a tool started for itself (clisweave's
+    seeds, codex's approval review) are still named, so they don't all
+    collapse into `(no title)`.
     """
     path = codex_rollout_path(sid)
     if not path:
@@ -614,7 +625,7 @@ def codex_rollout_title(sid):
     texts = _codex_genuine_messages(path, max_messages=5, roles=("user",), sample=False)
     if texts:
         for text in texts:
-            if not is_trivial_title(text):
+            if not is_trivial_title(text) and not _is_injected_or_pasted(text):
                 return _title_or_placeholder(text[:70], "")
         return _title_or_placeholder(texts[0][:70], "")
     # Codex's <environment_context> dump sits in front of the rest, so the
