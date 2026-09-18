@@ -501,6 +501,13 @@ def codex_light_records():
     return list(by_id.values())
 
 
+# Both this wrapper and the clipboard-paste one below append whatever the
+# user actually typed after this marker -- _codex_genuine_messages pulls
+# that trailing part out before the boilerplate check runs, so only a
+# wrapper with *nothing* genuine after it (a bare image paste, an
+# annotation with no comment) ever reaches CODEX_BOILERPLATE_PREFIXES.
+MY_REQUEST_MARKER = "## My request:\n"
+
 CODEX_BOILERPLATE_PREFIXES = (
     "# AGENTS.md", "<permissions", "<INSTRUCTIONS>", "<user_instructions>", "<environment_context>",
     # The CLI/plugin wrapper's own setup text: a listing showed a session
@@ -508,12 +515,15 @@ CODEX_BOILERPLATE_PREFIXES = (
     # request, and it pushed the real first message off the title.
     "<recommended_plugins>",
     # The wrapper Codex's clipboard-paste feature injects ahead of a pasted
-    # image: real sessions showed this as the *entire* message text (the
-    # image itself is a separate content block extract_text_from_content
-    # never sees), so it always reads as "# Files mentioned by the
-    # user:\n\n## codex-clipboard-<uuid>.png: ...\n\n## My request:\n\n"
+    # image: a bare paste with no comment reads as "# Files mentioned by
+    # the user:\n\n## codex-clipboard-<uuid>.png: ...\n\n## My request:\n\n"
     # with nothing genuine after it.
     "# Files mentioned by the user:",
+    # Injected when the user comments on text they selected from an earlier
+    # Codex response: a real session's entire title collapsed to this
+    # multi-sentence lecture even though it carried no request of its own
+    # (the selection with no comment attached).
+    "# Response annotations:",
     # Codex CLI's own startup notice, injected as a "user" message like the
     # rest of this list despite not being something anyone typed.
     "Loading latest updates...",
@@ -600,6 +610,20 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                 if not text:
                     continue
                 stripped = text.strip()
+                # The clipboard-paste and response-annotation wrappers both
+                # append what the user actually typed after this marker --
+                # when that trailing part is non-empty, it's what the
+                # message is really about (a real session's whole title
+                # collapsed to an unreadable annotations lecture even though
+                # the user's own follow-up, "this", came right after it).
+                # When it's empty (a bare image paste with no comment),
+                # `stripped` is left as the full wrapper so the boilerplate
+                # check below still catches it.
+                marker = stripped.find(MY_REQUEST_MARKER)
+                if marker != -1:
+                    trailing = stripped[marker + len(MY_REQUEST_MARKER):].strip()
+                    if trailing:
+                        stripped = trailing
                 if skip_boilerplate and stripped.startswith(CODEX_BOILERPLATE_PREFIXES):
                     continue
                 texts.append(stripped.replace("\n", " "))
