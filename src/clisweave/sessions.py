@@ -519,6 +519,11 @@ CODEX_BOILERPLATE_PREFIXES = (
     # the user:\n\n## codex-clipboard-<uuid>.png: ...\n\n## My request:\n\n"
     # with nothing genuine after it.
     "# Files mentioned by the user:",
+    # Same wrapper for a pasted block of *text* (a terminal transcript, a
+    # log): the actual pasted content lives in a separate attachment file
+    # this scan never opens, not inline after "## My request:", so a bare
+    # paste with no added comment is genuinely empty here too.
+    "# Files pasted by the user:",
     # Injected when the user comments on text they selected from an earlier
     # Codex response: a real session's entire title collapsed to this
     # multi-sentence lecture even though it carried no request of its own
@@ -527,6 +532,22 @@ CODEX_BOILERPLATE_PREFIXES = (
     # Codex CLI's own startup notice, injected as a "user" message like the
     # rest of this list despite not being something anyone typed.
     "Loading latest updates...",
+    # The IDE extension's own context dump (active file, open tabs, current
+    # selection) -- mirrors <environment_context>, just from the editor
+    # side instead of the shell.
+    "# Context from my IDE setup:",
+    # Codex's own marker for a turn the user killed mid-run, no different
+    # from claude's "[Request interrupted by user" (see INJECTED_PREFIXES).
+    "<turn_aborted>",
+    # Slash-command wrapper text, seen here via a cross-tool `ai handoff`
+    # that seeded a codex session with another tool's transcript verbatim.
+    "<command-name",
+    # Codex serializes a content block it can't otherwise represent (e.g. a
+    # pasted image) as literal text in this exact form -- not a caption, so
+    # it reads as pure noise rather than anything the user wrote. Sometimes
+    # paired as one block, "[Image #1]  [external unsupported block:
+    # image]" -- the numbered marker alone is just as uninformative.
+    "[external unsupported block:", "<image name=", "[Image #",
     CODEX_APPROVAL_PROMPT_PREFIX, JUDGE_PROMPT_PREFIX, HANDOFF_PROMPT_PREFIX,
 )
 

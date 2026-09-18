@@ -414,6 +414,61 @@ def test_codex_rollout_title_unwraps_trailing_request_in_response_annotation(mon
     assert sessions.codex_rollout_title(sid) == "this"
 
 
+def test_codex_rollout_title_skips_ide_context_dump(monkeypatch, tmp_path):
+    """The IDE extension's own "# Context from my IDE setup:" dump (active
+    file, open tabs) is injected the same way <environment_context> is --
+    not a request, so it should be skipped for the next real message."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a018ff-5a11-7b2c-9d30-4f67e8a9012b"
+    day_dir = codex_home / "sessions" / "2026" / "08" / "14"
+    day_dir.mkdir(parents=True)
+    path = day_dir / f"rollout-2026-08-14T00-00-00-{sid}.jsonl"
+
+    def user_line(text):
+        return json.dumps({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        })
+
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": "/x"}}) + "\n"
+        + user_line("# Context from my IDE setup:\n\n## Active file: build.gradle\n") + "\n"
+        + user_line("why is this Gradle sync taking so long?") + "\n"
+    )
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "why is this Gradle sync taking so long?"
+
+
+def test_codex_rollout_title_skips_unsupported_content_placeholder(monkeypatch, tmp_path):
+    """Regression test: codex serializes a content block it can't otherwise
+    represent (a pasted image) as literal placeholder text -- a real
+    session showed "[Image #1]  [external unsupported block: image]" as
+    its title. Skip it for the next real message."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a018ff-5a11-7b2c-9d30-4f67e8a9012c"
+    day_dir = codex_home / "sessions" / "2026" / "08" / "14"
+    day_dir.mkdir(parents=True)
+    path = day_dir / f"rollout-2026-08-14T00-00-00-{sid}.jsonl"
+
+    def user_line(text):
+        return json.dumps({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+        })
+
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": sid, "cwd": "/x"}}) + "\n"
+        + user_line("[Image #1]  [external unsupported block: image]") + "\n"
+        + user_line("the button line is misaligned") + "\n"
+    )
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "the button line is misaligned"
+
+
 def test_codex_rollout_title_does_not_treat_long_real_messages_as_boilerplate(monkeypatch, tmp_path):
     """Regression test: a real session had a genuine 1304-char task request
     (multiple bullet-pointed change requests) wrongly filtered out by a
