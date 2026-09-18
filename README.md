@@ -99,7 +99,7 @@ To switch agents, put the target tool after the row number: `ai 3 codex`. Cliswe
 
 `ai search` runs two complementary passes:
 
-1. **Exact pre-pass** — a case-insensitive substring scan of every candidate session's full on-disk content (transcripts, plus kimi background-task output logs). Zero LLM cost, perfect recall for whatever string you typed. Results print under `exact matches`.
+1. **Exact pre-pass** — a case-insensitive scan of conversation text, tool calls, results, and kimi background-task output logs. It ignores session metadata and injected instructions. Short alphabetic queries such as `cra` match whole words, so they do not match `craft` or `crash`; longer queries retain substring matching. Results print under `exact matches` with zero LLM cost.
 
 2. **Semantic pass** — the LLM judge. Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)", and the relevant sessions may never use your exact words. So each candidate's tool, cwd, title, and a short content snippet go into one prompt, and an LLM (`claude -p` by default) picks out which numbers are relevant. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi` account bills them) every time you run it. Results print under `semantic matches`.
 

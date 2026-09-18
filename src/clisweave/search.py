@@ -2,9 +2,10 @@
 
 Two complementary passes over the same candidate list:
 
-1. A literal pre-pass: case-insensitive substring scan of every session's
-   full on-disk content. Perfect recall for the exact string typed, zero
-   LLM cost. This is not optional decoration: the LLM pass reasons over
+1. A literal pre-pass: case-insensitive scan of conversation text (including
+   tool calls and results), excluding metadata and injected instructions.
+   Short alphabetic queries match whole words. This costs zero LLM calls.
+   This is not optional decoration: the LLM pass reasons over
    small sampled snippets, and a term that only appears in unsampled
    messages, tool calls, or past the snippet scan cap is invisible to it
    (real `aria2c` search: 4 such misses across codex/kimi stores).

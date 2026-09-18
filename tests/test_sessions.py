@@ -1145,6 +1145,38 @@ def test_literal_matches_codex_rollout(monkeypatch, tmp_path):
     assert sessions.literal_matches([rec], "wget") == []
 
 
+def test_literal_matches_short_acronym_ignores_longer_words_and_metadata(tmp_path):
+    f = tmp_path / "s.jsonl"
+    f.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "attachment", "rendered": "Project: CRA Article 14"},
+        {"type": "user", "message": {"content": "Help craft a plan for the crash"}},
+    ]))
+    record = _claude_record(f)
+    assert sessions.literal_matches([record], "cra") == []
+    f.write_text(f.read_text() + json.dumps({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": "The CRA meeting is next week."}]
+    }}) + "\n")
+    assert sessions.literal_matches([record], "cra") == [record]
+
+
+def test_literal_matches_ignores_codex_injected_context(monkeypatch, tmp_path):
+    rollout = tmp_path / "r.jsonl"
+    rollout.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "session_meta", "payload": {"title": "CRA"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "developer",
+            "content": [{"type": "input_text", "text": "CRA policy"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "Help with wifi"}]}},
+    ]))
+    monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: str(rollout))
+    record = {"tool": "codex", "id": "c1"}
+    assert sessions.literal_matches([record], "cra") == []
+    rollout.write_text(rollout.read_text() + json.dumps({"type": "response_item", "payload": {
+        "type": "custom_tool_call", "input": 'x({cmd:"ls CRA"})'
+    }}) + "\n")
+    assert sessions.literal_matches([record], "cra") == [record]
+
+
 # ---------- sample_stride ----------
 
 def test_sample_stride_always_includes_final_message():

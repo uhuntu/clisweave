@@ -585,11 +585,58 @@ def session_literal_scan_files(record):
     return files
 
 
-def _file_contains(path, needle):
+def _literal_pattern(topic):
+    # Short names and acronyms should not match ordinary longer words:
+    # "cra" in "craft" was making almost every session an exact match.
+    if len(topic) <= 3 and topic.isascii() and topic.isalpha():
+        return re.compile(r"(?<![A-Za-z0-9])" + re.escape(topic) + r"(?![A-Za-z0-9])", re.I)
+    return re.compile(re.escape(topic), re.I)
+
+
+def _literal_texts(tool, entry):
+    """Search conversation content, excluding metadata and injected context."""
+    kind = entry.get("type")
+    if tool == "claude" and kind in ("user", "assistant"):
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, str):
+            return [content]
+        return [block.get("text", "") for block in content or []
+                if isinstance(block, dict) and block.get("type") in ("text", "thinking")]
+    if tool == "codex" and kind == "response_item":
+        payload = entry.get("payload", {})
+        ptype = payload.get("type")
+        if ptype == "message" and payload.get("role") in ("user", "assistant"):
+            texts = _all_text_blocks(payload.get("content"), ("input_text", "text", "output_text"))
+            return [t for t in texts if not t.strip().startswith(CODEX_BOILERPLATE_PREFIXES)]
+        if ptype in ("function_call", "custom_tool_call"):
+            return [_codex_tool_call_text(payload)]
+        if ptype in ("function_call_output", "custom_tool_call_output"):
+            return [payload.get("output", "")]
+    if tool == "kimi":
+        if kind == "turn.prompt":
+            return _all_text_blocks(entry.get("input"))
+        if kind == "context.append_loop_event":
+            event = entry.get("event", {})
+            if event.get("type") == "content.part":
+                part = event.get("part", {})
+                return [part.get("text") or part.get("think") or ""]
+            if event.get("type") == "tool.result":
+                return [event.get("result", {}).get("output", "")]
+    return []
+
+
+def _file_contains(path, pattern, tool=None):
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if needle in line.lower():
+                if tool is None:  # kimi background task output.log
+                    texts = [line]
+                else:
+                    try:
+                        texts = _literal_texts(tool, json.loads(line))
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                if any(isinstance(t, str) and pattern.search(t) for t in texts):
                     return True
     except OSError:
         pass
@@ -597,16 +644,16 @@ def _file_contains(path, needle):
 
 
 def literal_matches(candidates, topic):
-    """Case-insensitive substring scan of candidates' full on-disk content.
-    Perfect recall for whatever exact string was typed, complementing the
-    LLM judge (which reasons over small sampled snippets and can miss a term
-    that only appears in unsampled messages, tool calls, or past the scan
-    cap) -- at zero LLM cost. Deliberately dumb: no stemming, no semantics;
-    the judge stays responsible for those."""
-    needle = topic.lower()
+    """Scan complete conversation text, including tool calls and results.
+
+    Ignore session metadata and injected instructions. Short alphabetic
+    topics match whole words; other topics retain substring matching.
+    """
+    pattern = _literal_pattern(topic)
     hits = []
     for record in candidates:
-        if any(_file_contains(path, needle) for path in session_literal_scan_files(record)):
+        if any(_file_contains(path, pattern, record["tool"] if path.endswith(".jsonl") else None)
+               for path in session_literal_scan_files(record)):
             hits.append(record)
     return hits
 
