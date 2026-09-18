@@ -505,7 +505,7 @@ def _capture_output_sections(monkeypatch):
     rendered = []
     monkeypatch.setattr(
         sessions, "render_rows",
-        lambda rows, write_cache=True: rendered.append((list(rows), write_cache)),
+        lambda rows, write_cache=True, start=1: rendered.append((list(rows), write_cache, start)),
     )
     cached = []
     monkeypatch.setattr(sessions, "write_list_cache", lambda entries: cached.append(list(entries)))
@@ -587,8 +587,29 @@ def test_cmd_search_shows_both_sections_and_unioned_cache(monkeypatch, capsys, t
     assert "semantic matches (judge: claude):" in out
     assert [row[1] for row in rendered[0][0]] == ["hit-1"]
     assert [row[1] for row in rendered[1][0]] == ["sem-1"]
+    assert rendered[0][2] == 1
+    assert rendered[1][2] == 2
     # one cache write covering both sections in printed order
     assert [[e["id"] for e in entries] for entries in cached] == [["hit-1", "sem-1"]]
+
+
+def test_cmd_search_excludes_review_sessions_with_copied_history(monkeypatch, capsys, tmp_path):
+    review = _candidate_with_term(tmp_path, "claude", "review", "CRA in copied transcript")
+    review["title"] = "The following is the Codex agent history whose request action you are assessing"
+    genuine = _candidate_with_term(tmp_path, "claude", "genuine", "CRA work")
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [review, genuine])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "actual work"),
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    rendered, cached = _capture_output_sections(monkeypatch)
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: _NoneResult())
+
+    search.cmd_search(["cra"])
+
+    assert [row[1] for row in rendered[0][0]] == ["genuine"]
+    assert [[e["id"] for e in entries] for entries in cached] == [["genuine"]]
+    assert "Scanning 1 sessions" in capsys.readouterr().err
 
 
 def test_cmd_search_judge_failure_still_shows_exact(monkeypatch, capsys, tmp_path):

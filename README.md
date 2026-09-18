@@ -105,6 +105,8 @@ To switch agents, put the target tool after the row number: `ai 3 codex`. Cliswe
 
 The exact pass exists because the semantic pass reasons over small *sampled* snippets, and a term that only appears in unsampled messages, tool calls, or past the snippet scan cap is invisible to the judge — a real `aria2c` search missed 4 sessions that grepping found immediately. The two passes union (a session listed as exact is not repeated under semantic), and both count for `ai resume <N>`.
 
+Search skips Codex approval-review sessions whose prompts quote another agent's history. Those copies otherwise appear as duplicate matches. Row numbers continue across the exact and semantic sections, so each displayed number matches `ai resume <N>`.
+
 The judge reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
 
 ### Normalized flags (`ai <tool> ...`)

@@ -1088,6 +1088,12 @@ def test_exec_or_die_missing_binary_reports_cleanly(monkeypatch, capsys):
 
 # ---------- literal_matches ----------
 
+def test_render_rows_can_continue_search_numbering(capsys):
+    rows = [("codex", "full-id", "1h ago", "short-id", "/work", "A session")]
+    sessions.render_rows(rows, write_cache=False, start=49)
+    assert capsys.readouterr().out.splitlines()[-1].lstrip().startswith("49  codex")
+
+
 def _claude_record(path, sid="claude-1"):
     return {"tool": "claude", "id": sid, "path": str(path)}
 

@@ -989,11 +989,11 @@ def resolve_row(r):
     return (tool, r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
 
-def render_rows(rows, write_cache=True):
+def render_rows(rows, write_cache=True, start=1):
     """rows: list of resolve_row()-shaped tuples, already in display order.
     Prints the numbered table and, unless write_cache=False, writes the
-    resume cache (cmd_search renders two sections and writes the cache once
-    for their union, so both sections' numbers stay resumable)."""
+    resume cache (cmd_search renders two sections with continuing numbers
+    and writes the cache once for their union)."""
     if not rows:
         print("No sessions found.")
         return
@@ -1001,7 +1001,7 @@ def render_rows(rows, write_cache=True):
     if write_cache:
         write_list_cache([{"tool": tool, "id": full_id} for tool, full_id, *_ in rows])
 
-    w_num = len(str(len(rows)))
+    w_num = len(str(start + len(rows) - 1))
     w_tool = max(4, max(len(r[0]) for r in rows))
     w_when = max(4, max(len(r[2]) for r in rows))
     w_id = max(2, max(len(r[3]) for r in rows))
@@ -1009,7 +1009,7 @@ def render_rows(rows, write_cache=True):
 
     header = f"{'#':>{w_num}}  {'TOOL':<{w_tool}}  {'WHEN':<{w_when}}  {'ID':<{w_id}}  {'CWD':<{w_cwd}}  TITLE"
     print(header)
-    for n, (tool, _full_id, when, sid, cwd_show, title) in enumerate(rows, start=1):
+    for n, (tool, _full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
         cwd_disp = cwd_show if len(cwd_show) <= w_cwd else "…" + cwd_show[-(w_cwd - 1):]
         print(f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  {title}")
 

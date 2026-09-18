@@ -78,6 +78,13 @@ JUDGE_CMD = {
 }
 DEFAULT_JUDGE = "claude"
 
+# Approval-review sessions quote another agent's full transcript as their
+# first prompt. Searching those copies produces duplicates unrelated to the
+# review session itself, and their titles/snippets also confuse the judge.
+REVIEW_TITLE_PREFIXES = (
+    "The following is the Codex agent history whose request action you are",
+)
+
 # Judges that accept the prompt on stdin instead of argv. Passing a long
 # prompt as a command-line argument hits OS limits (ARG_MAX) once the
 # candidate list grows into the hundreds; stdin avoids that entirely.
@@ -268,6 +275,13 @@ def cmd_search(argv):
         return
 
     rows = [sessions.resolve_row(r) for r in candidates]
+    searchable = [(r, row) for r, row in zip(candidates, rows)
+                  if not row[5].startswith(REVIEW_TITLE_PREFIXES)]
+    candidates = [r for r, _ in searchable]
+    rows = [row for _, row in searchable]
+    if not candidates:
+        print("No sessions found.")
+        return
     snippets = [snippet_for(r) for r in candidates]
     # row: (tool, full_id, when, short_id, cwd, title)
     entries = [(row[0], row[4], row[5], snippet) for row, snippet in zip(rows, snippets)]
@@ -361,4 +375,4 @@ def cmd_search(argv):
         sessions.render_rows(exact_rows, write_cache=False)
     if semantic:
         print(f"semantic matches (judge: {used_judge}):")
-        sessions.render_rows(semantic, write_cache=False)
+        sessions.render_rows(semantic, write_cache=False, start=len(exact_rows) + 1)
