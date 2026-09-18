@@ -78,13 +78,6 @@ JUDGE_CMD = {
 }
 DEFAULT_JUDGE = "claude"
 
-# Approval-review sessions quote another agent's full transcript as their
-# first prompt. Searching those copies produces duplicates unrelated to the
-# review session itself, and their titles/snippets also confuse the judge.
-REVIEW_TITLE_PREFIXES = (
-    "The following is the Codex agent history whose request action you are",
-)
-
 # Judges that accept the prompt on stdin instead of argv. Passing a long
 # prompt as a command-line argument hits OS limits (ARG_MAX) once the
 # candidate list grows into the hundreds; stdin avoids that entirely.
@@ -275,10 +268,15 @@ def cmd_search(argv):
         return
 
     rows = [sessions.resolve_row(r) for r in candidates]
-    searchable = [(r, row) for r, row in zip(candidates, rows)
-                  if not row[5].startswith(REVIEW_TITLE_PREFIXES)]
-    candidates = [r for r, _ in searchable]
-    rows = [row for _, row in searchable]
+    # Same exclusion as `ai sessions`: a session a tool started for itself
+    # isn't a conversation, and its content is other sessions' text -- which
+    # makes it a magnet for spurious matches. This also catches copied
+    # review transcripts (a codex approval review's title collapses to
+    # "codex approval review" once resolved), so a separate raw-prefix check
+    # isn't needed.
+    keep = [i for i, row in enumerate(rows) if not sessions.is_tool_started_row(row)]
+    candidates = [candidates[i] for i in keep]
+    rows = [rows[i] for i in keep]
     if not candidates:
         print("No sessions found.")
         return

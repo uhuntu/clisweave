@@ -76,7 +76,7 @@ ai sessions --limit all     # no cutoff -- same as `ai full`
 ai full                     # shorthand for `ai sessions --limit all`
 ai sessions --tool codex    # filter to one tool
 ai sessions --cwd           # only sessions started in the current directory
-ai sessions --all           # include archived sessions
+ai sessions --all           # include archived sessions and ones a tool started for itself
 
 ai resume kimi 97946bc7     # resume by short id / prefix (resolved against real session ids)
 ai resume claude            # no id -> tool's own interactive picker
@@ -90,6 +90,8 @@ ai search "..." --judge kimi               # use a different model to judge rele
 ai stats                    # session counts per tool, oldest/newest, top directories
 ai stats --tool claude      # stats for one tool only
 ```
+
+Sessions a tool started for itself are left out of `ai sessions` and `ai search`: Codex's command-approval reviews (one per command it asks you to approve) and `ai search`'s own judge runs. Neither is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`ai resume codex <id>`), and `ai sessions --all` lists them anyway.
 
 Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
 
