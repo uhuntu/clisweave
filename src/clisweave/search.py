@@ -29,11 +29,38 @@ unioned, trade more LLM calls for reliable recall. Chunks run in parallel
 so wall-clock time stays close to a single call's latency.
 """
 import concurrent.futures
+import platform
 import re
+import signal
 import subprocess
 import sys
 
 from . import sessions
+
+# On Linux, ask the kernel to signal a judge subprocess if *this* process
+# dies for any reason -- including a hard SIGKILL or OOM-kill, which no
+# try/except/finally in this file can ever catch (the parent's process image
+# is gone before any of its own cleanup code could run). subprocess.run()
+# already kills the child on every in-process exception (it has its own
+# bare `except: process.kill()`), so this closes the one remaining gap.
+#
+# preexec_fn runs in the forked child before exec, and CPython's own docs
+# warn it can deadlock in a threaded process if another thread held a lock
+# (e.g. malloc's) at the moment of fork -- real here, since judge calls run
+# inside a ThreadPoolExecutor for parallel chunks. Keeping this to a single
+# pre-resolved libc call (no dlopen/CDLL lookup at fork time) is the
+# standard mitigation and what tools that need this in threaded Python
+# programs actually do.
+if platform.system() == "Linux":
+    import ctypes
+
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    _PR_SET_PDEATHSIG = 1
+
+    def _die_with_parent():
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+else:
+    _die_with_parent = None
 
 JUDGE_CMD = {
     # --no-session-persistence / --ephemeral: the judge call's own prompt
@@ -133,10 +160,12 @@ def _call_judge(judge, prompt):
             return subprocess.run(
                 judge_cmd, input=prompt, capture_output=True, text=True,
                 encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+                preexec_fn=_die_with_parent,
             )
         return subprocess.run(
             [*judge_cmd, prompt], capture_output=True, text=True,
             encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+            preexec_fn=_die_with_parent,
         )
     except FileNotFoundError:
         print(f"ai search: '{judge_cmd[0]}' not found on PATH", file=sys.stderr)
