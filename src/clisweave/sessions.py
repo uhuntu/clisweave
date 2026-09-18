@@ -331,29 +331,56 @@ def _title_or_placeholder(title, fallback):
 
 
 def claude_title_and_cwd(path, cwd_fallback):
-    """Scan a session's jsonl once for both a title (first *genuine* user
-    message) and the real cwd (more reliable than guessing from the project
-    directory name, which can't distinguish literal dashes in a path
-    from directory separators).
+    """Scan a session's jsonl once for both a title and the real cwd (more
+    reliable than guessing from the project directory name, which can't
+    distinguish literal dashes in a path from directory separators).
 
-    "Genuine" matters: Claude Code's first user record is often not a real
-    request but injected content, a pasted terminal transcript, or a bare
-    acknowledgement ("Yes") replying to an earlier screenshot this scan
-    can't read -- a real listing showed titles like
-    `<scheduled-task name="kimi-timer-...">` (the scheduled-task reminder
-    that woke the session), `(hunt@host)-[~] $ cd Downloads ...` (a pasted
-    shell transcript), and "Yes". Those are skipped, like codex's injected
-    boilerplate, so the title is the first thing the user actually asked.
-    If every message in the window is one of those, the first one is used
-    anyway -- a noisy title still beats an unrecognizable `(no title)` row."""
+    Claude Code's own UI names a session too, and stores that as
+    `custom-title`/`ai-title` records scattered through the transcript
+    (re-emitted as the session grows) -- when the session has been renamed
+    away from its "New session" default, or the CLI generated a proper
+    summary, that beats anything this function could extract itself: a
+    session whose first *text* message was a bare "Yes" (replying to a
+    screenshot this scan can't read) had an ai-title of "ADB connection
+    HuntNUC", and one whose window never reaches a genuine message had a
+    custom-title naming the actual topic. Those records can show up
+    anywhere in the file, so finding them costs a full read regardless of
+    TITLE_SCAN_LINES -- cheap, since it's a substring check per line and
+    only a match gets json.loads'd.
+
+    Absent either, the title is the first *genuine* user message: Claude
+    Code's first user record is often not a real request but injected
+    content, a pasted terminal transcript, or a bare acknowledgement ("Yes")
+    replying to an earlier screenshot this scan can't read -- a real
+    listing showed titles like `<scheduled-task name="kimi-timer-...">`
+    (the scheduled-task reminder that woke the session), `(hunt@host)-[~] $
+    cd Downloads ...` (a pasted shell transcript), and "Yes". Those are
+    skipped, like codex's injected boilerplate, so the title is the first
+    thing the user actually asked. If every message in the window is one of
+    those, the first one is used anyway -- a noisy title still beats an
+    unrecognizable `(no title)` row."""
     fallback = None
     title = None
     cwd = None
+    custom_title = None
+    ai_title = None
     try:
         with open(path, encoding="utf-8") as fh:
             for i, line in enumerate(fh):
+                if '"custom-title"' in line:
+                    try:
+                        custom_title = json.loads(line).get("customTitle") or custom_title
+                    except Exception:
+                        pass
+                    continue
+                if '"ai-title"' in line:
+                    try:
+                        ai_title = json.loads(line).get("aiTitle") or ai_title
+                    except Exception:
+                        pass
+                    continue
                 if i > TITLE_SCAN_LINES or (title and cwd):
-                    break
+                    continue
                 try:
                     d = json.loads(line)
                 except Exception:
@@ -375,7 +402,13 @@ def claude_title_and_cwd(path, cwd_fallback):
                     title = stripped[:70]
     except FileNotFoundError:
         pass
-    return _title_or_placeholder(title, fallback), (cwd or cwd_fallback)
+    if custom_title and custom_title != "New session":
+        resolved = custom_title
+    elif ai_title:
+        resolved = ai_title
+    else:
+        resolved = _title_or_placeholder(title, fallback)
+    return resolved, (cwd or cwd_fallback)
 
 
 def claude_session_cwd(sid):

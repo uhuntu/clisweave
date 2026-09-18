@@ -633,6 +633,61 @@ def test_claude_title_and_cwd_falls_back_to_acknowledgement_if_nothing_else(tmp_
     assert title == "Yes"
 
 
+def test_claude_title_and_cwd_prefers_ai_title_over_heuristic(tmp_path):
+    """Regression test: Claude Code's own UI names a session via ai-title/
+    custom-title records scattered through the transcript. A session whose
+    first *text* message was a bare "Yes" (replying to a screenshot this
+    scan can't read) had an ai-title of "ADB connection HuntNUC" -- a real
+    topic name this function's own heuristics could never produce."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "Yes"}}) + "\n"
+        + json.dumps({"type": "custom-title", "customTitle": "New session"}) + "\n"
+        + json.dumps({"type": "ai-title", "aiTitle": "ADB connection HuntNUC"}) + "\n"
+    )
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "ADB connection HuntNUC"
+
+
+def test_claude_title_and_cwd_prefers_custom_title_over_ai_title(tmp_path):
+    """A custom-title that isn't still "New session" means the session was
+    actually renamed (by the user or promoted from the ai-title by Claude
+    Code's own UI) -- that should win over the raw ai-title suggestion."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "cd Downloads"}}) + "\n"
+        + json.dumps({"type": "ai-title", "aiTitle": "Downloads listing"}) + "\n"
+        + json.dumps({"type": "custom-title", "customTitle": "Downloads directory listing"}) + "\n"
+    )
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "Downloads directory listing"
+
+
+def test_claude_title_and_cwd_ignores_default_custom_title(tmp_path):
+    """"New session" is the un-renamed default, not a real title -- it
+    should never win over a heuristic title or an ai-title."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "fix the login crash"}}) + "\n"
+        + json.dumps({"type": "custom-title", "customTitle": "New session"}) + "\n"
+    )
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "fix the login crash"
+
+
+def test_claude_title_and_cwd_finds_title_records_past_scan_window(tmp_path):
+    """ai-title/custom-title records can sit far past TITLE_SCAN_LINES (a
+    real session had them past line 1200) -- they must still be found even
+    when the heuristic scan window has already given up."""
+    session_file = tmp_path / "s.jsonl"
+    lines = [json.dumps({"type": "user", "message": {"content": "Yes"}})]
+    lines += [json.dumps({"type": "queue-operation"}) for _ in range(sessions.TITLE_SCAN_LINES + 50)]
+    lines.append(json.dumps({"type": "ai-title", "aiTitle": "ADB connection HuntNUC"}))
+    session_file.write_text("\n".join(lines) + "\n")
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "ADB connection HuntNUC"
+
+
 def test_sample_stride_covers_latter_middle_of_long_list():
     """Regression test: a real 104-message session had its relevant
     content at message 71 -- neither a first-N-only scan nor a first+last
