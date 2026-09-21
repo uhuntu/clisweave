@@ -392,7 +392,7 @@ def claude_title_and_cwd(path, cwd_fallback):
                 text = extract_text_from_content(d.get("message", {}).get("content"))
                 if not text:
                     continue
-                stripped = text.strip().replace("\n", " ")
+                stripped = " ".join(text.split())
                 if fallback is None:
                     fallback = stripped[:70]
                 # Shell-prompt detection needs the *first* line as written;
@@ -671,8 +671,8 @@ def codex_rollout_title(sid):
     if texts:
         for text in texts:
             if not is_trivial_title(text) and not _is_injected_or_pasted(text):
-                return _title_or_placeholder(text[:70], "")
-        return _title_or_placeholder(texts[0][:70], "")
+                return _title_or_placeholder(" ".join(text.split())[:70], "")
+        return _title_or_placeholder(" ".join(texts[0].split())[:70], "")
     # Codex's <environment_context> dump sits in front of the rest, so the
     # seed isn't necessarily the first message: look past it.
     for seed in _codex_genuine_messages(path, max_messages=200, roles=("user",),
@@ -786,7 +786,7 @@ def kimi_title(sdir):
                     if not (isinstance(block, dict) and block.get("type") == "text"):
                         continue
                     raw = block.get("text", "")
-                    stripped = raw.strip().replace("\n", " ")
+                    stripped = " ".join(raw.split())
                     if not stripped:
                         continue
                     if fallback is None:

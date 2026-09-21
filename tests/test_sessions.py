@@ -2132,3 +2132,18 @@ def test_codex_handoff_from_a_claude_session_shows_the_claude_topic(monkeypatch,
     row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == sid))
 
     assert row[5] == "(handoff) why does the OTA boot loop roll back?"
+
+
+def test_titles_collapse_runs_of_whitespace(tmp_path):
+    """A pasted email or multi-line message has its newlines flattened to
+    spaces, leaving long runs of them that eat the 70-character title budget
+    ("Dear PE guys,     鉴于近期会有...")."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(json.dumps({
+        "type": "user",
+        "message": {"content": "Dear PE guys,\n\n\n    please check\n\n  the build"},
+    }) + "\n")
+
+    title, _ = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "Dear PE guys, please check the build"
