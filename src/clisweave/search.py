@@ -185,6 +185,16 @@ def _is_session_limit(result):
     return "session limit" in output.lower()
 
 
+def _is_auth_failure(result):
+    """Claude's login expired or was revoked ("Failed to authenticate. API
+    Error: 401 OAuth access token has expired"). Like a session limit, it
+    makes claude unusable for the whole run -- every batch fails the same
+    way -- so it warrants the same fall-through to another judge."""
+    output = (result.stdout or "") + (result.stderr or "")
+    lowered = output.lower()
+    return "failed to authenticate" in lowered or "re-authenticate" in lowered
+
+
 def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     """Run the judge (falling back off claude on a session-limit hit,
     unless the user pinned one explicitly) against one prompt -- a full
@@ -216,11 +226,14 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        if j == "claude" and _is_session_limit(result):
+        if j == "claude" and (_is_session_limit(result) or _is_auth_failure(result)):
             if not judge_explicit and len(judges) > 1:
                 print("  -> falling back to next judge", file=sys.stderr)
                 continue
-            print("  hint: Claude is at its session limit. Retry after the reset time, or use --judge codex / --judge kimi.", file=sys.stderr)
+            if _is_auth_failure(result):
+                print("  hint: Claude's login has expired. Run `claude` and sign in again (/login), or use --judge codex / --judge kimi.", file=sys.stderr)
+            else:
+                print("  hint: Claude is at its session limit. Retry after the reset time, or use --judge codex / --judge kimi.", file=sys.stderr)
         raise JudgeError(result.returncode)
     raise JudgeError(result.returncode if result else 1)
 

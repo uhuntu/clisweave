@@ -259,6 +259,64 @@ def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
     assert "falling back" in err
 
 
+def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
+    """Regression test: an expired Claude OAuth token failed all 6 judge
+    batches with a 401 and never tried codex/kimi, because only a session
+    limit or a timeout triggered the fallback. It makes claude just as
+    unusable for the run, so it should fall through the same way."""
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: None)
+
+    calls = []
+
+    class ClaudeExpired:
+        returncode = 1
+        stdout = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+        stderr = ""
+
+    class CodexOK:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or (CodexOK if len(calls) > 1 else ClaudeExpired)())
+
+    search.cmd_search(["topic"])
+
+    assert len(calls) == 2
+    assert calls[0][0][0][:2] == ["claude", "-p"]
+    assert calls[1][0][0][:2] == ["codex", "exec"]
+    assert "falling back" in capsys.readouterr().err
+
+
+def test_cmd_search_explicit_claude_auth_failure_shows_login_hint(monkeypatch, capsys):
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+
+    class FakeResult:
+        returncode = 1
+        stdout = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+        stderr = ""
+
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: FakeResult())
+
+    with pytest.raises(SystemExit) as exc_info:
+        search.cmd_search(["--judge", "claude", "topic"])
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "login has expired" in err
+    assert "--judge codex" in err
+
+
 def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
