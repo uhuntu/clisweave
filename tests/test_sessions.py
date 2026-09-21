@@ -2035,3 +2035,100 @@ def test_codex_title_ignores_tool_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: str(rollout))
 
     assert sessions.codex_rollout_title("s") == "the real request"
+
+
+# ---------- handoff sessions take their source's topic ----------
+
+def _write_claude_session(projects, sid, *messages, cwd="/home/hunt"):
+    proj = projects / "-home-hunt"
+    proj.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"type": "user", "cwd": cwd, "message": {"content": m}}) for m in messages]
+    path = proj / f"{sid}.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _handoff_seed(tool, sid):
+    return (f"Continue the work from this {tool} session ({sid}). "
+            "Read the complete conversation export at /tmp/x.md. First briefly summarize.")
+
+
+def _resolved_titles(monkeypatch, tmp_path):
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "projects"))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(sessions, "KIMI_HOME", str(tmp_path / ".kimi-code"))
+    return {r["id"]: sessions.resolve_row(r)[5] for r in sessions.claude_light_records()}
+
+
+def test_handoff_session_shows_source_topic(monkeypatch, tmp_path):
+    """Regression test: a session `ai handoff` started was titled by its seed
+    prompt ("Continue codex session 019eb5f4"), so six rows of one listing
+    said where they came from and nothing about what they were about."""
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "src-1", "why does the OTA boot loop roll back?")
+    _write_claude_session(projects, "hand-1", _handoff_seed("claude", "src-1"))
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert titles["src-1"] == "why does the OTA boot loop roll back?"
+    assert titles["hand-1"] == "(handoff) why does the OTA boot loop roll back?"
+
+
+def test_handoff_of_a_handoff_shows_the_original_topic(monkeypatch, tmp_path):
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "root", "scan the tree for open-source licenses")
+    _write_claude_session(projects, "mid", _handoff_seed("claude", "root"))
+    _write_claude_session(projects, "leaf", _handoff_seed("claude", "mid"))
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert titles["leaf"] == "(handoff) scan the tree for open-source licenses"
+
+
+def test_handoff_cycle_does_not_recurse_forever(monkeypatch, tmp_path):
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "a", _handoff_seed("claude", "b"))
+    _write_claude_session(projects, "b", _handoff_seed("claude", "a"))
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert set(titles) == {"a", "b"}
+
+
+def test_handoff_whose_source_is_gone_keeps_its_own_title(monkeypatch, tmp_path):
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "orphan", _handoff_seed("claude", "deleted-session"),
+                          "fix the login crash")
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert titles["orphan"] == "fix the login crash"
+
+
+def test_session_that_only_mentions_the_seed_is_not_a_handoff(monkeypatch, tmp_path):
+    """Only a message that *begins* with the seed counts -- a conversation
+    about the handoff feature quotes the phrase mid-message."""
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "src-1", "why does the OTA boot loop roll back?")
+    _write_claude_session(
+        projects, "talk",
+        f"how does 'Continue the work from this claude session (src-1)' get built?")
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert not titles["talk"].startswith(sessions.HANDOFF_TITLE_MARK)
+
+
+def test_codex_handoff_from_a_claude_session_shows_the_claude_topic(monkeypatch, tmp_path):
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "src-1", "why does the OTA boot loop roll back?")
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a018ff-5a11-7b2c-9d30-4f67e8a90130"
+    write_codex_rollout(codex_home, sid, cwd="/x", user_text=_handoff_seed("claude", "src-1"))
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == sid))
+
+    assert row[5] == "(handoff) why does the OTA boot loop roll back?"

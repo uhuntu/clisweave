@@ -1273,10 +1273,73 @@ def cmd_stats(args):
         print(f"  ({n}) {cwd}")
 
 
-def resolve_row(r):
-    """Turn a light record into the tuple used for both display and the
-    resume cache: (tool, full_id, when, short_id, cwd, title). Shared by
-    cmd_list and `ai search`."""
+HANDOFF_SEED_RE = re.compile(r"Continue the work from this (\w+) session \(([^)\s]+)\)")
+HANDOFF_TITLE_MARK = "(handoff) "
+# A handoff of a handoff is followed back toward the original topic; the cap
+# is only a guard against a cycle in the (hand-editable) session stores.
+HANDOFF_MAX_DEPTH = 5
+
+
+def _iter_strings(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _iter_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _iter_strings(v)
+
+
+def handoff_source(path, limit=60):
+    """(source_tool, source_id) if the transcript at `path` was started by
+    `ai handoff`, else None. Reads only the opening lines -- the seed prompt
+    is the session's first real message -- and, so that a session that merely
+    discusses handoffs isn't mistaken for one, only accepts a message that
+    *begins* with the seed text."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for i, line in enumerate(fh):
+                if i >= limit:
+                    break
+                if HANDOFF_PROMPT_PREFIX not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                for s in _iter_strings(d):
+                    if s.lstrip().startswith(HANDOFF_PROMPT_PREFIX):
+                        m = HANDOFF_SEED_RE.match(s.lstrip())
+                        if m:
+                            return m.group(1), m.group(2)
+    except OSError:
+        pass
+    return None
+
+
+def _transcript_path(r):
+    if r["tool"] == "claude":
+        return r.get("path")
+    if r["tool"] == "codex":
+        return codex_rollout_path(r["id"])
+    return os.path.join(r["dir"], "agents", "main", "wire.jsonl") if r.get("dir") else None
+
+
+def _find_record(tool, sid):
+    """The light record for a session by (tool, id), or None if it is gone."""
+    if tool == "claude":
+        return next((r for r in claude_light_records() if r["id"] == sid), None)
+    if tool == "codex":
+        if not codex_rollout_path(sid):
+            return None
+        return {"tool": "codex", "id": sid, "ts": 0, "title": codex_thread_names().get(sid)}
+    if tool == "kimi":
+        return next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
+    return None
+
+
+def _resolve_title_and_cwd(r, depth=0):
     tool = r["tool"]
     if tool == "claude":
         title, cwd_resolved = claude_title_and_cwd(r["path"], r.get("cwd"))
@@ -1287,7 +1350,30 @@ def resolve_row(r):
     else:
         title = kimi_title(r["dir"])
         cwd_show = r.get("cwd") or "?"
-    return (tool, r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
+
+    # A session `ai handoff` started is named by its seed prompt ("Continue
+    # codex session 019eb5f4"), which says where it came from but nothing
+    # about what it is *about* -- and the listing exists to tell topics
+    # apart. Show the source session's topic instead, when it can be found.
+    if depth < HANDOFF_MAX_DEPTH:
+        path = _transcript_path(r)
+        source = handoff_source(path) if path else None
+        record = _find_record(*source) if source else None
+        if record:
+            source_title = _resolve_title_and_cwd(record, depth + 1)[0]
+            if source_title.startswith(HANDOFF_TITLE_MARK):
+                source_title = source_title[len(HANDOFF_TITLE_MARK):]
+            if source_title != "(no title)" and source_title not in TOOL_STARTED_TITLES:
+                title = HANDOFF_TITLE_MARK + source_title
+    return title, cwd_show
+
+
+def resolve_row(r):
+    """Turn a light record into the tuple used for both display and the
+    resume cache: (tool, full_id, when, short_id, cwd, title). Shared by
+    cmd_list and `ai search`."""
+    title, cwd_show = _resolve_title_and_cwd(r)
+    return (r["tool"], r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
 
 def is_tool_started_row(row):
