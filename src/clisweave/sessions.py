@@ -2,6 +2,7 @@
 Invoked via `ai sessions` / `ai resume`, or standalone as `ai-sessions`.
 """
 import calendar
+import codecs
 import glob
 import json
 import os
@@ -1046,6 +1047,68 @@ def kimi_handoff_messages(sdir):
     return messages
 
 
+# `kimi -p` prints this after the run: "To resume this session: kimi -r
+# <sessionId>" (-r is a hidden alias of -S/--session). Parsed from teed
+# output so a handoff can drop straight into the interactive continuation of
+# the seeded session instead of leaving that to the user.
+KIMI_RESUME_HINT_RE = re.compile(r"To resume this session:\s*kimi\s+-(?:r|S)\s+(\S+)")
+
+
+def _run_kimi_seed(extra, prompt):
+    """Run `kimi -p <seed>`, relaying output to the terminal as it arrives
+    while capturing a copy to recover the persisted session id. Returns
+    (exit status, session id or None).
+
+    kimi has no positional-prompt form (a bare prompt parses as a subcommand
+    name) and -p does not read stdin, so this is its only seed mechanism;
+    the interactive continuation happens afterwards via -S."""
+    argv = ["kimi", *extra, "-p", prompt]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=None)
+    except FileNotFoundError:
+        print("ai: 'kimi' not found on PATH", file=sys.stderr)
+        sys.exit(127)
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    relayed = []
+    assert proc.stdout is not None
+    while True:
+        # read1, not read: a pipe read(n) blocks until n bytes or EOF, which
+        # would hold all output back until kimi exits
+        chunk = proc.stdout.read1(65536)
+        if not chunk:
+            break
+        text = decoder.decode(chunk)
+        relayed.append(text)
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    rc = proc.wait()
+    relayed.append(decoder.decode(b"", True))
+    match = KIMI_RESUME_HINT_RE.search("".join(relayed))
+    return rc, (match.group(1) if match else None)
+
+
+def _kimi_newest_session_since(started):
+    """Newest kimi session created at/after `started` (epoch seconds) whose
+    home is the current directory -- the session a just-finished `kimi -p`
+    run persisted, recovered without relying on the exact wording of kimi's
+    resume-hint line."""
+    best_id = None
+    best_ts = None
+    for rec in kimi_light_records(show_all=True):
+        cwd = rec.get("cwd")
+        if not cwd or os.path.realpath(cwd) != os.path.realpath(os.getcwd()):
+            continue
+        ts = rec.get("ts") or 0
+        # ISO-string state.json timestamps truncate to whole seconds, so a
+        # session created between `started` and the next second can round
+        # slightly below it
+        if ts < started - 2:
+            continue
+        if best_ts is None or ts >= best_ts:
+            best_id, best_ts = rec["id"], ts
+    return best_id
+
+
 def write_handoff_export(tool, sid, transcript):
     os.makedirs(HANDOFF_DIR, exist_ok=True)
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)
@@ -1096,12 +1159,29 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
         # Unlike claude/codex, kimi has no bare positional prompt to seed an
         # interactive session -- passing one gets parsed as an attempted
         # subcommand name ("unknown command '<the whole prompt>'"). Its only
-        # way to accept a prompt at all is -p/--prompt, which runs once
-        # non-interactively and exits; the resulting session can still be
-        # continued afterward with `kimi -c`.
-        print("ai handoff: kimi has no interactive prompt-seed option -- running once with "
-              "-p (continue afterward with `kimi -c`)", file=sys.stderr)
-        exec_or_die(["kimi", *extra, "-p", prompt])
+        # prompt form is -p/--prompt, which runs once non-interactively. The
+        # session that run persists is resumed interactively right after, so
+        # the handoff lands in a live session instead of a dead prompt that
+        # makes the user retype `kimi -c` -- which could also pick up some
+        # other session as "most recent in this directory".
+        print("ai handoff: kimi cannot take an opening prompt interactively -- seeding with one "
+              "`kimi -p` run, then resuming the new session", file=sys.stderr)
+        started = time.time()
+        try:
+            rc, sid = _run_kimi_seed(extra, prompt)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        if rc != 0:
+            print(f"ai handoff: kimi seed run exited with status {rc} -- not resuming; once "
+                  "fixed, continue manually with `kimi -c`", file=sys.stderr)
+            sys.exit(rc if rc > 0 else 1)
+        if not sid:
+            sid = _kimi_newest_session_since(started)
+        if sid:
+            exec_or_die(["kimi", *extra, "-S", sid])
+        print("ai handoff: could not determine the seeded kimi session -- continue manually "
+              "with `kimi -c`", file=sys.stderr)
+        return
     else:
         exec_or_die([target_tool, *extra, prompt])
 

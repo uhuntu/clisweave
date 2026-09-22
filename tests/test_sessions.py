@@ -1556,11 +1556,14 @@ def test_handoff_by_number_starts_target_in_source_cwd(monkeypatch, tmp_path, ca
     assert "kimi row 1 -> codex" in capsys.readouterr().err
 
 
-def test_handoff_by_number_to_kimi_uses_print_mode(monkeypatch, tmp_path, capsys):
-    """Regression test: kimi has no bare positional prompt to seed an
-    interactive session -- unlike claude/codex, passing one gets parsed as
-    an attempted subcommand ("unknown command '<the whole prompt>'"). Its
-    only way to accept a prompt at all is -p/--prompt."""
+def test_handoff_by_number_to_kimi_seeds_print_run_then_resumes_it(monkeypatch, tmp_path, capsys):
+    """kimi has no bare positional prompt to seed an interactive session --
+    unlike claude/codex, passing one gets parsed as an attempted subcommand
+    ("unknown command '<the whole prompt>'"). Its only prompt form is
+    -p/--prompt, which runs once non-interactively, so the handoff seeds via
+    a `kimi -p` run and then immediately resumes the persisted session
+    interactively (-S <id>), instead of dropping the user at a dead prompt
+    that says to retype `kimi -c`."""
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     cache_file = tmp_path / "last_list.json"
@@ -1570,15 +1573,236 @@ def test_handoff_by_number_to_kimi_uses_print_mode(monkeypatch, tmp_path, capsys
         sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
     )
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    seed_calls = []
+
+    def fake_seed(extra, prompt):
+        seed_calls.append((extra, prompt))
+        return 0, "session_aaaa-1111-2222-3333-444444444444"
+
+    monkeypatch.setattr(sessions, "_run_kimi_seed", fake_seed)
     calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
 
     sessions.handoff_by_number(1, "kimi", [])
 
-    assert calls[0][0] == "kimi"
-    assert calls[0][1] == "-p"
-    assert "complete conversation export" in calls[0][2]
-    assert "no interactive prompt-seed option" in capsys.readouterr().err
+    assert seed_calls[0][0] == []
+    assert "complete conversation export" in seed_calls[0][1]
+    assert calls == [["kimi", "-S", "session_aaaa-1111-2222-3333-444444444444"]]
+    err = capsys.readouterr().err
+    assert "seeding with one `kimi -p` run" in err
+
+
+def test_handoff_by_number_to_kimi_forwards_extra_flags_to_seed_and_resume(monkeypatch, tmp_path):
+    """Flags meant for the target tool (e.g. -y) apply to the interactive
+    continuation too, not just the one-shot seed run."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    seed_calls = []
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: seed_calls.append((extra, prompt)) or (0, "session_seed"))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "kimi", ["-y"])
+
+    assert seed_calls[0][0] == ["-y"]
+    assert calls == [["kimi", "-y", "-S", "session_seed"]]
+
+
+def test_handoff_to_kimi_falls_back_to_index_when_resume_hint_unparseable(monkeypatch, tmp_path):
+    """The seeded session is normally recovered from kimi's own "To resume
+    this session:" line; when that can't be parsed (kimi changed the
+    wording, or a non-default --output-format moved it), the newest session
+    for this directory created since the seed run started is used instead."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (0, None))
+    monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: "session_from_index")
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "kimi", [])
+
+    assert calls == [["kimi", "-S", "session_from_index"]]
+
+
+def test_handoff_to_kimi_seed_failure_aborts_without_resuming(monkeypatch, tmp_path, capsys):
+    """A failed seed run must not chain into an interactive session: the
+    user needs to see and fix the problem first."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (2, None))
+    monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: pytest.fail("must not scan the index after a failed seed"))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    with pytest.raises(SystemExit) as exc:
+        sessions.handoff_by_number(1, "kimi", [])
+
+    assert exc.value.code == 2
+    assert calls == []
+    assert "exited with status 2" in capsys.readouterr().err
+
+
+def test_handoff_to_kimi_unresolvable_session_tells_user_how_to_continue(monkeypatch, tmp_path, capsys):
+    """Last-resort path: seed ran fine but neither the hint nor the index
+    identifies the session. Say how to continue instead of exec'ing a bare
+    `kimi` (which would open an unrelated empty session)."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (0, None))
+    monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: None)
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "kimi", [])  # returns without exec'ing
+
+    assert calls == []
+    assert "continue manually with `kimi -c`" in capsys.readouterr().err
+
+
+def test_kimi_newest_session_since_picks_newest_session_in_cwd(monkeypatch, tmp_path):
+    started = time.time()
+    target = tmp_path / "work"
+    other = tmp_path / "other"
+    target.mkdir()
+    other.mkdir()
+    monkeypatch.chdir(target)
+    records = [
+        {"tool": "kimi", "id": "session_too-old", "ts": started - 3600, "cwd": str(target), "dir": "/x"},
+        {"tool": "kimi", "id": "session_old", "ts": started + 1, "cwd": str(target), "dir": "/x"},
+        {"tool": "kimi", "id": "session_new", "ts": started + 30, "cwd": str(target), "dir": "/x"},
+        # newer, but rooted in another directory -- a concurrent `kimi -p`
+        # elsewhere must not shadow the one seeded here
+        {"tool": "kimi", "id": "session_other-dir", "ts": started + 60, "cwd": str(other), "dir": "/x"},
+        # no timestamp -> excluded rather than guessed
+        {"tool": "kimi", "id": "session_no-ts", "ts": 0, "cwd": str(target), "dir": "/x"},
+    ]
+    monkeypatch.setattr(sessions, "kimi_light_records", lambda show_all: records)
+
+    assert sessions._kimi_newest_session_since(started) == "session_new"
+
+
+def test_kimi_newest_session_since_accepts_whole_second_truncation(monkeypatch, tmp_path):
+    """state.json written with ISO timestamps truncates to whole seconds,
+    landing up to a second below `started`; that session still qualifies."""
+    started = time.time()
+    target = tmp_path / "work"
+    target.mkdir()
+    monkeypatch.chdir(target)
+    records = [
+        {"tool": "kimi", "id": "session_seeded", "ts": started - 1, "cwd": str(target), "dir": "/x"},
+    ]
+    monkeypatch.setattr(sessions, "kimi_light_records", lambda show_all: records)
+
+    assert sessions._kimi_newest_session_since(started) == "session_seeded"
+
+
+def test_run_kimi_seed_relays_stream_and_parses_resume_hint(monkeypatch, capsys):
+    """The seed run must stream kimi's output to the terminal (not buffer it
+    until exit) and recover the session id from the resume hint, even when a
+    multi-byte UTF-8 character straddles a pipe-read boundary."""
+
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+    class _FakeProc:
+        def __init__(self, chunks, rc):
+            self.stdout = _FakeStdout(chunks)
+            self._rc = rc
+
+        def wait(self):
+            return self._rc
+
+    sid_line = "To resume this session: kimi -r session_9f8e-7d6c-5b4a-3210-fedcba987654\n"
+    # "中" is \xe4\xb8\xad -- split its three bytes across two chunks
+    chunks = [b"summary \xe4\xb8", b"\xad done\n" + sid_line.encode("utf-8")]
+    seen = {}
+
+    def fake_popen(argv, stdout=None, stderr=None):
+        seen["argv"] = argv
+        seen["stdout"] = stdout
+        return _FakeProc(chunks, 0)
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", fake_popen)
+
+    rc, sid = sessions._run_kimi_seed(["-y"], "seed prompt")
+
+    assert seen["argv"] == ["kimi", "-y", "-p", "seed prompt"]
+    assert seen["stdout"] is sessions.subprocess.PIPE
+    assert rc == 0
+    assert sid == "session_9f8e-7d6c-5b4a-3210-fedcba987654"
+    out = capsys.readouterr().out
+    assert "summary 中 done" in out
+    assert "�" not in out  # no mojibake from the split multibyte char
+
+
+def test_run_kimi_seed_without_hint_returns_no_session(monkeypatch, capsys):
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+    class _FakeProc:
+        def __init__(self, chunks, rc):
+            self.stdout = _FakeStdout(chunks)
+            self._rc = rc
+
+        def wait(self):
+            return self._rc
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", lambda argv, stdout=None, stderr=None: _FakeProc([b"just a summary\n"], 0))
+
+    rc, sid = sessions._run_kimi_seed([], "seed prompt")
+
+    assert (rc, sid) == (0, None)
+    assert "just a summary" in capsys.readouterr().out
+
+
+def test_run_kimi_seed_missing_kimi_exits_127(monkeypatch, capsys):
+    def fake_popen(argv, stdout=None, stderr=None):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(SystemExit) as exc:
+        sessions._run_kimi_seed([], "seed prompt")
+
+    assert exc.value.code == 127
+    assert "'kimi' not found on PATH" in capsys.readouterr().err
 
 
 def test_claude_handoff_exports_every_text_message(monkeypatch, tmp_path):
