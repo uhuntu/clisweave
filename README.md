@@ -87,7 +87,7 @@ ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
 ai search "katago" --tool claude           # restrict the candidates to one tool
 ai search "..." --judge kimi               # use a different model to judge relevance
 ai search "..." --why                      # also print the judge's one-line reason per match
-ai search "..." --all                      # list every hit, not just the strongest 15
+ai search "..." --all                      # list every hit, not just the strongest 10
 
 ai stats                    # session counts per tool, oldest/newest, top directories
 ai stats --tool claude      # stats for one tool only
@@ -115,7 +115,7 @@ Search skips Codex approval-review sessions whose prompts quote another agent's 
 
 The judge reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
 
-It is also asked to name its strongest hit first, and that order is what gets printed — recency only breaks ties. Ranking by how recently a session ran put the one session actually about the topic below older ones that merely mentioned it. Only the strongest 15 are listed (`--all` shows the rest), since the tail is the weakest of them and a long list is what made a broad search hard to scan.
+It is also asked to name its strongest hit first, and that order is what gets printed — recency only breaks ties. Ranking by how recently a session ran put the one session actually about the topic below older ones that merely mentioned it. Only the strongest 10 are listed (`--all` shows the rest), since the tail is the weakest of them and a long list is what made a broad search hard to scan.
 
 It must also point at something concrete — a file, command, error, or version — rather than count a session whose only link is the directory it ran in. Asked for that, the same search still returns `Hello` and `Yes go` rows from `android-vts`, but now with the specific commit behind each (`A13 VTS NFC HAL OpenAfterOpen fix`), which is what makes them worth keeping.
 

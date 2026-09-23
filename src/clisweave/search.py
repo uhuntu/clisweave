@@ -100,7 +100,7 @@ MAX_CONCURRENT_BATCHES = 8
 # -- mostly sessions that share a field with the topic rather than being about
 # it. Since a long list is what makes a search hard to scan, only the top of
 # it is shown; `--all` lists every hit.
-SEMANTIC_ROWS_SHOWN = 15
+SEMANTIC_ROWS_SHOWN = 10
 
 
 class JudgeError(Exception):
