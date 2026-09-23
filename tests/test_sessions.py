@@ -302,6 +302,30 @@ def test_codex_rollout_title_skips_pasted_shell_transcript(monkeypatch, tmp_path
     assert sessions.codex_rollout_title(sid) == "what's using up all this disk space?"
 
 
+@pytest.mark.parametrize("pasted", [
+    "drwxrwxr-x 36 1001 1001 4096 Aug 14 15:25 mt8390_android13_sdk\ndrwxrwxr-x 2 1001 1001 4096 Aug 14 15:26 kernel-5.15",
+    "/home/hunt/EDLA/A13/android-gts/tools",
+    "~/work/linux",
+])
+def test_codex_rollout_title_skips_pasted_output_with_no_prompt(monkeypatch, tmp_path, pasted):
+    """Regression test: pasted terminal output doesn't always carry a prompt
+    line -- `ls -l` listings and bare paths showed up as titles because the
+    shell-prompt regexes had nothing to match."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a012b7-7ad1-7c22-9d30-4f67e8a90131"
+    path = write_codex_rollout(codex_home, sid, cwd="/x", user_text=pasted)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": "which SDK is this tree from?"}]},
+        }) + "\n")
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "which SDK is this tree from?"
+
+
 def test_codex_rollout_title_skips_clipboard_image_wrapper(monkeypatch, tmp_path):
     """Regression test: pasting a clipboard image wraps it in a
     "# Files mentioned by the user:" instruction block with no genuine text
@@ -696,6 +720,67 @@ def test_claude_title_skips_pasted_shell_transcript(tmp_path):
 
     title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
     assert title == "why does traecli print that banner?"
+
+
+def test_claude_title_skips_pasted_output_with_no_prompt(tmp_path):
+    """Regression test: a real listing had `drwxrwxr-x 36 1001 1001 4096
+    Aug 14 15:25 mt8390_android13_sdk ...` as a title -- an `ls -l` paste
+    with no prompt line for the shell-prompt regexes to catch."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "drwxrwxr-x 36 1001 1001 4096 Aug 14 15:25 mt8390_android13_sdk\n"
+                       "drwxrwxr-x  2 1001 1001 4096 Aug 14 15:26 kernel-5.15",
+        }}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "which SDK is this tree from?"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "which SDK is this tree from?"
+
+
+def test_claude_title_skips_bare_path_paste(tmp_path):
+    """Same shape, no output to speak of: a path dropped in for context says
+    nothing about what was asked about it."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "/home/hunt/EDLA/A13/android-gts/tools"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "why does this GTS run fail?"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "why does this GTS run fail?"
+
+
+def test_claude_title_keeps_request_that_only_mentions_a_path(tmp_path):
+    """Guard against the path rule over-reaching: a path with words around it
+    is a request about that path, not a paste of one."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "check /home/hunt/EDLA for stale reports"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "check /home/hunt/EDLA for stale reports"
+
+
+def test_claude_title_skips_resume_seed_from_another_tool(tmp_path):
+    """Regression test: some sessions in this setup open with a bare
+    "Continue from where you left off." written by another tool (not
+    clisweave's own seed, which names the source session) -- a listing
+    showed it as a title, and it propagated into the child session `ai
+    handoff` titles by its source's title."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "Continue from where you left off."}}) + "\n"
+        + json.dumps({"type": "user", "message": {
+            "content": "(hunt@host)-[~]\n$ ai search \"Google Play Developer Organization\"",
+        }}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "No, actually claude-desktop go through terminal"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "No, actually claude-desktop go through terminal"
 
 
 def test_claude_title_skips_captionless_image_paste(tmp_path):

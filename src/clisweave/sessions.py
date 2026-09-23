@@ -236,6 +236,13 @@ HANDOFF_SESSION_TITLE = "ai handoff"
 # Codex's own spellings of the same thing are in CODEX_BOILERPLATE_PREFIXES.
 IMAGE_MESSAGE_PREFIX = "[Image:"
 
+# A resume seed written by another tool in this setup (aimux; not clisweave's
+# own wording, which names the source session): a session opened by it has
+# this as its only opening, ahead of the pasted transcript and the real
+# request that follow -- and it propagates, since `ai handoff` titles a child
+# session by its source's title.
+RESUME_SEED_PREFIX = "Continue from where you left off"
+
 # Injected when a session is picked up after it ran out of context: the
 # recap of the conversation being continued, ahead of anything the user
 # asked. Seen as a codex title too, so it is boilerplate on both sides.
@@ -282,6 +289,7 @@ INJECTED_PREFIXES = (
     HANDOFF_PROMPT_PREFIX,
     IMAGE_MESSAGE_PREFIX,
     CONTINUATION_PROMPT_PREFIX,
+    RESUME_SEED_PREFIX,
 )
 
 
@@ -301,6 +309,14 @@ SHELL_PROMPT_RE = re.compile(r"^[^\s@]+@[^\s@]+[^\n]*?[$#](\s|$)")
 # ...". Deliberately `$` only -- `# ` far more often starts a markdown
 # heading in a real message than a root shell prompt.
 BARE_PROMPT_RE = re.compile(r"^\s*\$\s+\S")
+
+# Pasted terminal output with no prompt line at all, so neither of the
+# regexes above can ever see it: an `ls -l` listing (the permission column
+# is unmistakable) and a bare path dropped in for context. Real listings had
+# both as titles -- `drwxrwxr-x 36 1001 1001 4096 Aug 14 15:25 mt8390_...`
+# and `/home/hunt/EDLA/A13/android-gts/tools`.
+LS_OUTPUT_RE = re.compile(r"^[-dlbcps][-rwxXsStT]{9}\s")
+PATH_ONLY_RE = re.compile(r"^~?/[^\s]*$")
 
 # How many transcript lines to look at for a genuine title. Bigger than the
 # old 40/60 because skipping a scheduled-task reminder (and any further
@@ -328,7 +344,12 @@ def _is_injected_or_pasted(text):
         return True
     if stripped.startswith(INJECTED_PREFIXES):
         return True
-    return bool(SHELL_PROMPT_RE.match(_prompt_head(stripped)) or BARE_PROMPT_RE.match(stripped))
+    if bool(SHELL_PROMPT_RE.match(_prompt_head(stripped)) or BARE_PROMPT_RE.match(stripped)):
+        return True
+    # Only the opening line: a real request can be followed by pasted output,
+    # and that paste shouldn't reject the question in front of it.
+    head = stripped.split("\n", 1)[0].strip()
+    return bool(LS_OUTPUT_RE.match(head) or PATH_ONLY_RE.match(head))
 
 
 def _title_or_placeholder(title, fallback):
