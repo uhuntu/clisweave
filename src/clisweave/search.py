@@ -142,6 +142,17 @@ def build_prompt(topic, entries):
     return (
         "You are filtering a list of past AI coding-assistant conversations to find "
         f"the ones relevant to this topic: {topic!r}\n\n"
+        # The relevance bar has to be spelled out: without it a batch judge
+        # returns anything sharing a word or a field with the topic -- a
+        # search for one device's firmware came back with 40 "matches",
+        # mostly sessions that merely mention Android or a device at all.
+        "Relevant means the conversation is about that topic itself -- the same "
+        "device, project, file, error, or question -- not merely something in "
+        "the same field. Sharing a word, a tool, or a domain with the topic is "
+        "not enough, and neither is mentioning it once in passing.\n"
+        "Be strict: when you are unsure, leave it out. A short list of "
+        "confident hits beats a long one padded with maybes, and returning few "
+        "-- or none -- is fine.\n\n"
         "Reply with ONLY a comma-separated list of the numbers below that are relevant. "
         "No other text, no explanation. If none are relevant, reply with the single "
         "word: none\n\n" + "\n".join(lines)

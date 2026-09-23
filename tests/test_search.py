@@ -46,6 +46,16 @@ def test_judge_timeout_reports_cleanly(monkeypatch, capsys):
     assert "timed out after" in capsys.readouterr().err
 
 
+def test_build_prompt_states_a_relevance_bar():
+    """Without one, a batch judge returns anything sharing a word or a field
+    with the topic: one real search came back with 40 "matches", mostly
+    sessions that only mention the subject area at all."""
+    prompt = search.build_prompt("nfc issue", [("claude", "/b", "hi", "hi there")])
+    assert "about that topic itself" in prompt
+    assert "Sharing a word, a tool, or a domain" in prompt
+    assert "when you are unsure, leave it out" in prompt
+
+
 def test_build_prompt_numbers_entries_in_order():
     prompt = search.build_prompt("nfc issue", [
         ("codex", "/a", "Find isnfcon", "Find isnfcon"),
