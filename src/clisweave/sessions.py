@@ -230,6 +230,17 @@ JUDGE_SESSION_TITLE = "ai search judge"
 HANDOFF_PROMPT_PREFIX = "Continue the work from this "
 HANDOFF_SESSION_TITLE = "ai handoff"
 
+# A pasted image with no caption: Claude Code serializes it as literal text
+# in this form, so a session opened by a screenshot is titled with the tmp
+# path the upload was written to ("[Image: source: /tmp/claude-1000/...").
+# Codex's own spellings of the same thing are in CODEX_BOILERPLATE_PREFIXES.
+IMAGE_MESSAGE_PREFIX = "[Image:"
+
+# Injected when a session is picked up after it ran out of context: the
+# recap of the conversation being continued, ahead of anything the user
+# asked. Seen as a codex title too, so it is boilerplate on both sides.
+CONTINUATION_PROMPT_PREFIX = "This session is being continued from a previous conversation"
+
 # Codex starts a session of its own to have a model assess whether a command
 # is safe to run; every user message in it is this wrapper around the
 # transcript under review, so there is no request of its own to title it by
@@ -269,7 +280,16 @@ INJECTED_PREFIXES = (
     "[Request interrupted by user",
     JUDGE_PROMPT_PREFIX,
     HANDOFF_PROMPT_PREFIX,
+    IMAGE_MESSAGE_PREFIX,
+    CONTINUATION_PROMPT_PREFIX,
 )
+
+
+def is_image_only(text):
+    """True if a message is nothing but a serialized image -- a captionless
+    screenshot paste, which names no topic and so can't be a title or even
+    the fallback behind one (see claude_title_and_cwd)."""
+    return text.strip().startswith(IMAGE_MESSAGE_PREFIX)
 
 # A pasted shell transcript with a full prompt -- "user@host:/path$ cmd" or
 # zsh's "(user@host)-[~] $ cmd". Only the opening is tested: multi-line
@@ -394,7 +414,10 @@ def claude_title_and_cwd(path, cwd_fallback):
                 if not text:
                     continue
                 stripped = " ".join(text.split())
-                if fallback is None:
+                # a captionless screenshot names nothing, so it can't stand
+                # in as the fallback either -- better `(no title)` than a tmp
+                # path
+                if fallback is None and not is_image_only(stripped):
                     fallback = stripped[:70]
                 # Shell-prompt detection needs the *first* line as written;
                 # `stripped` has newlines flattened, which would let a later
@@ -550,6 +573,7 @@ CODEX_BOILERPLATE_PREFIXES = (
     # image]" -- the numbered marker alone is just as uninformative.
     "[external unsupported block:", "<image name=", "[Image #",
     CODEX_APPROVAL_PROMPT_PREFIX, JUDGE_PROMPT_PREFIX, HANDOFF_PROMPT_PREFIX,
+    CONTINUATION_PROMPT_PREFIX,
 )
 
 
@@ -790,7 +814,7 @@ def kimi_title(sdir):
                     stripped = " ".join(raw.split())
                     if not stripped:
                         continue
-                    if fallback is None:
+                    if fallback is None and not is_image_only(stripped):
                         fallback = stripped[:70]
                     # as with claude: the un-flattened text, so a later
                     # line's prompt can't reject a real opening question

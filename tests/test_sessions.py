@@ -168,6 +168,8 @@ def test_codex_rollout_title_skips_injected_boilerplate(monkeypatch, tmp_path):
 @pytest.mark.parametrize("noise", [
     "<recommended_plugins> Here is a list of plugins that are available but not enabled.",
     "The following is the Codex agent history whose request action you are responding to.",
+    "This session is being continued from a previous conversation that ran out of "
+    "context. The conversation is summarized below:",
 ])
 def test_codex_rollout_title_skips_cli_injected_setup_text(monkeypatch, tmp_path, noise):
     """A real listing had rows titled by the CLI's own setup text: neither is
@@ -694,6 +696,52 @@ def test_claude_title_skips_pasted_shell_transcript(tmp_path):
 
     title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
     assert title == "why does traecli print that banner?"
+
+
+def test_claude_title_skips_captionless_image_paste(tmp_path):
+    """Regression test: a real listing had a session titled `[Image: source:
+    /tmp/claude-1000/-home-hunt-work-ApiService/316b8f6f-1...` -- a pasted
+    screenshot serialized as text, naming no topic."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "[Image: source: /tmp/claude-1000/-home-hunt-work-ApiService/316b8f6f-1.png]",
+        }}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "what's wrong with this screen?"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "what's wrong with this screen?"
+
+
+def test_claude_title_shows_no_title_when_session_is_only_an_image(tmp_path):
+    """An image with no caption names nothing, and there is no later message
+    to fall back to -- the tmp path it was written to is no title."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "[Image: source: /tmp/claude-1000/-home-hunt-work-ApiService/316b8f6f-1.png]",
+        }}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "(no title)"
+
+
+def test_claude_title_skips_continuation_recap(tmp_path):
+    """Regression test: resuming a session past its context limit injects a
+    recap of the conversation being continued, ahead of anything asked."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "This session is being continued from a previous conversation that ran "
+                       "out of context. The conversation is summarized below:\n...",
+        }}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "now update the OTA script"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "now update the OTA script"
 
 
 def test_claude_title_skips_paste_whose_prompt_sits_on_the_second_line(tmp_path):
