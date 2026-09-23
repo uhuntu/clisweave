@@ -86,6 +86,7 @@ ai 3 codex                  # hand row 3's context to a new Codex session
 ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
 ai search "katago" --tool claude           # restrict the candidates to one tool
 ai search "..." --judge kimi               # use a different model to judge relevance
+ai search "..." --why                      # also print the judge's one-line reason per match
 
 ai stats                    # session counts per tool, oldest/newest, top directories
 ai stats --tool claude      # stats for one tool only
@@ -112,6 +113,8 @@ The exact pass exists because the semantic pass reasons over small *sampled* sni
 Search skips Codex approval-review sessions whose prompts quote another agent's history. Those copies otherwise appear as duplicate matches. Row numbers continue across the exact and semantic sections, so each displayed number matches `ai resume <N>`.
 
 The judge reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
+
+It also has to say *why* each match counts: the judge answers one line per match (`7: upgrades the firmware from A13`) rather than a bare list of numbers, which makes it commit to a link instead of ticking a box. Those lines are off by default — they double the height of the listing — and `--why` prints each one under its row. Handy when a hit looks wrong: a row titled `Hello` in an `android-vts` directory turned out to be a real A13 VTS fix, which the title alone gives no hint of.
 
 ### Normalized flags (`ai <tool> ...`)
 

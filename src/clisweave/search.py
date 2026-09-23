@@ -283,6 +283,7 @@ def cmd_search(argv):
     tool_filter = None
     judge = DEFAULT_JUDGE
     judge_explicit = False
+    show_why = False
     topic_parts = []
 
     i = 0
@@ -307,13 +308,16 @@ def cmd_search(argv):
                 sys.exit(1)
             judge_explicit = True
             i += 2
+        elif a == "--why":
+            show_why = True
+            i += 1
         else:
             topic_parts.append(a)
             i += 1
 
     topic = " ".join(topic_parts).strip()
     if not topic:
-        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi]", file=sys.stderr)
+        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--why]", file=sys.stderr)
         sys.exit(1)
 
     candidates = gather_candidates(tool_filter)
@@ -413,13 +417,13 @@ def cmd_search(argv):
     matched = [row for n, row in enumerate(rows, start=1) if n in matched_indices]
     # Already reported in the exact section -- don't list a session twice.
     semantic = [row for row in matched if (row[0], row[1]) not in exact_ids]
-    # The judge's own one-line justification, shown under each match: it has
-    # to commit to a link rather than tick a number, and a weak match is
-    # recognizable as one instead of looking like a considered pick.
+    # The judge's own one-line justification. Off by default: it doubles the
+    # height of the listing, and most rows are clear enough from the title --
+    # `--why` prints it under each match when a hit needs explaining.
     notes = {
         (rows[n - 1][0], rows[n - 1][1]): why
         for n, why in matched_reasons.items() if why
-    }
+    } if show_why else None
 
     if not exact_rows and not semantic:
         print("No relevant sessions found.")
