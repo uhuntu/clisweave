@@ -2184,6 +2184,20 @@ def test_render_rows_can_continue_search_numbering(capsys):
     assert capsys.readouterr().out.splitlines()[-1].lstrip().startswith("49  codex")
 
 
+def test_render_rows_prints_a_note_under_its_row(capsys):
+    """`ai search` passes the judge's one-line justification here. It goes on
+    its own line: the table is already wide, and a reason is prose."""
+    rows = [
+        ("codex", "id-1", "1h ago", "id-1", "/work", "Rebuild the firmware"),
+        ("codex", "id-2", "2h ago", "id-2", "/work", "Unrelated chat"),
+    ]
+    sessions.render_rows(rows, write_cache=False, notes={("codex", "id-1"): "upgrades IDC from A13"})
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2].strip().startswith("why: upgrades IDC from A13")
+    assert "why:" not in lines[3]
+
+
 def _claude_record(path, sid="claude-1"):
     return {"tool": "claude", "id": sid, "path": str(path)}
 

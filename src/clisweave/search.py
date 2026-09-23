@@ -153,15 +153,45 @@ def build_prompt(topic, entries):
         "Be strict: when you are unsure, leave it out. A short list of "
         "confident hits beats a long one padded with maybes, and returning few "
         "-- or none -- is fine.\n\n"
-        "Reply with ONLY a comma-separated list of the numbers below that are relevant. "
-        "No other text, no explanation. If none are relevant, reply with the single "
-        "word: none\n\n" + "\n".join(lines)
+        # One line per match, with the reason: it makes the judge commit to a
+        # link instead of ticking a number, and the reason is shown with the
+        # result so a weak match is recognizable as one.
+        "Reply with ONLY one line per match, in this form -- the number, a "
+        "colon, then a few words saying what links it to the topic:\n"
+        "7: upgrades the IDC_Series firmware from A13\n\n"
+        "No other text. If none are relevant, reply with the single word: none\n\n"
+        + "\n".join(lines)
     )
 
 
 def parse_numbers(text, max_n):
     nums = {int(m) for m in re.findall(r"\d+", text)}
     return {n for n in nums if 1 <= n <= max_n}
+
+
+# "7: upgrades the firmware from A13" -> (7, "upgrades the firmware from A13")
+REASON_LINE_RE = re.compile(r"\s*(\d+)\s*[):.\-]\s*(.*)")
+
+
+def parse_numbered_reasons(text, max_n):
+    """Judge output -> {number: reason}.
+
+    Falls back to a bare list of numbers when the judge answers that way
+    anyway (some do, despite the instruction), in which case the reasons are
+    empty. Digits *inside* a reason ("from A13") are never read as a picked
+    number -- that is exactly what a plain number scan over this richer reply
+    would do, turning a reason into a phantom match."""
+    reasons = {}
+    for line in text.splitlines():
+        m = REASON_LINE_RE.match(line)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if 1 <= n <= max_n:
+            reasons.setdefault(n, m.group(2).strip())
+    if reasons:
+        return reasons
+    return {n: "" for n in parse_numbers(text, max_n)}
 
 
 def _call_judge(judge, prompt):
@@ -231,7 +261,7 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
                 continue
             raise
         if result.returncode == 0:
-            return parse_numbers(result.stdout, n), j
+            return parse_numbered_reasons(result.stdout, n), j
         print(f"ai search: {j} exited with an error ({label})", file=sys.stderr)
         if result.stdout:
             print(result.stdout, file=sys.stderr)
@@ -323,24 +353,24 @@ def cmd_search(argv):
         label = f"{len(chunk)} sessions against: {topic!r}" if n_chunks == 1 else (
             f"batch {chunk_idx + 1}/{n_chunks} ({len(chunk)} sessions) against: {topic!r}"
         )
-        picked_local, used_judge = run_judge_with_fallback(
+        reasons_local, used_judge = run_judge_with_fallback(
             prompt, len(chunk), selected_judge, judge_explicit, label
         )
         if n_chunks > 1:
-            noun = "match" if len(picked_local) == 1 else "matches"
+            noun = "match" if len(reasons_local) == 1 else "matches"
             print(
                 f"Finished batch {chunk_idx + 1}/{n_chunks}: "
-                f"{len(picked_local)} {noun}",
+                f"{len(reasons_local)} {noun}",
                 file=sys.stderr,
                 flush=True,
             )
-        return {offset + n for n in picked_local}, used_judge
+        return {offset + n: why for n, why in reasons_local.items()}, used_judge
 
-    matched_indices = set()
+    matched_reasons = {}
     used_judge = judge
     if n_chunks == 1:
         try:
-            matched_indices, used_judge = process_chunk(0)
+            matched_reasons, used_judge = process_chunk(0)
         except JudgeError as e:
             if exact_ids:
                 print("ai search: semantic search failed; showing exact matches only", file=sys.stderr)
@@ -353,7 +383,7 @@ def cmd_search(argv):
         # limit or otherwise unavailable.
         try:
             first_matches, used_judge = process_chunk(0)
-            matched_indices |= first_matches
+            matched_reasons.update(first_matches)
         except JudgeError:
             failures += 1
 
@@ -367,7 +397,7 @@ def cmd_search(argv):
             for fut in concurrent.futures.as_completed(futures):
                 try:
                     chunk_matches, _ = fut.result()
-                    matched_indices |= chunk_matches
+                    matched_reasons.update(chunk_matches)
                 except JudgeError:
                     failures += 1
         if failures == n_chunks:
@@ -379,9 +409,17 @@ def cmd_search(argv):
         if failures:
             print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
 
+    matched_indices = set(matched_reasons)
     matched = [row for n, row in enumerate(rows, start=1) if n in matched_indices]
     # Already reported in the exact section -- don't list a session twice.
     semantic = [row for row in matched if (row[0], row[1]) not in exact_ids]
+    # The judge's own one-line justification, shown under each match: it has
+    # to commit to a link rather than tick a number, and a weak match is
+    # recognizable as one instead of looking like a considered pick.
+    notes = {
+        (rows[n - 1][0], rows[n - 1][1]): why
+        for n, why in matched_reasons.items() if why
+    }
 
     if not exact_rows and not semantic:
         print("No relevant sessions found.")
@@ -397,4 +435,4 @@ def cmd_search(argv):
         sessions.render_rows(exact_rows, write_cache=False)
     if semantic:
         print(f"semantic matches (judge: {used_judge}):")
-        sessions.render_rows(semantic, write_cache=False, start=len(exact_rows) + 1)
+        sessions.render_rows(semantic, write_cache=False, start=len(exact_rows) + 1, notes=notes)

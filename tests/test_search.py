@@ -101,6 +101,28 @@ def test_snippet_for_dispatches_per_tool(monkeypatch):
     assert search.snippet_for({"tool": "kimi", "dir": "/y"}) == "kimi:/y"
 
 
+def test_parse_numbered_reasons_reads_reason_lines():
+    assert search.parse_numbered_reasons("2: upgrades the IDC firmware\n7: A13 OTA notes\n", 10) == {
+        2: "upgrades the IDC firmware",
+        7: "A13 OTA notes",
+    }
+
+
+def test_parse_numbered_reasons_ignores_digits_inside_a_reason():
+    """A plain number scan over a reply this rich would read the "13" out of
+    "from A13" and turn a justification into a phantom match."""
+    assert search.parse_numbered_reasons("7: upgrades it from A13 to A15\n", 100) == {
+        7: "upgrades it from A13 to A15",
+    }
+
+
+def test_parse_numbered_reasons_falls_back_to_bare_numbers():
+    """Some judges answer with a plain list anyway, despite the instruction;
+    the match still counts, just without a reason to show."""
+    assert search.parse_numbered_reasons("1, 4\n", 10) == {1: "", 4: ""}
+    assert search.parse_numbered_reasons("none", 10) == {}
+
+
 def test_cmd_search_rejects_empty_topic(capsys):
     with pytest.raises(SystemExit):
         search.cmd_search([])
@@ -172,7 +194,7 @@ def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys
 
     def fake_judge(prompt, n, judge, explicit, label):
         prompts.append(prompt)
-        return {1}, judge
+        return {1: "mentions nfc"}, judge
 
     monkeypatch.setattr(search, "run_judge_with_fallback", fake_judge)
 
@@ -607,7 +629,9 @@ def _capture_output_sections(monkeypatch):
     rendered = []
     monkeypatch.setattr(
         sessions, "render_rows",
-        lambda rows, write_cache=True, start=1: rendered.append((list(rows), write_cache, start)),
+        lambda rows, write_cache=True, start=1, notes=None: rendered.append(
+            (list(rows), write_cache, start)
+        ),
     )
     cached = []
     monkeypatch.setattr(sessions, "write_list_cache", lambda entries: cached.append(list(entries)))

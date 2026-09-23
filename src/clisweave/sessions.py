@@ -1507,11 +1507,16 @@ def is_tool_started_row(row):
     return row[5] in TOOL_STARTED_TITLES
 
 
-def render_rows(rows, write_cache=True, start=1):
+def render_rows(rows, write_cache=True, start=1, notes=None):
     """rows: list of resolve_row()-shaped tuples, already in display order.
     Prints the numbered table and, unless write_cache=False, writes the
     resume cache (cmd_search renders two sections with continuing numbers
-    and writes the cache once for their union)."""
+    and writes the cache once for their union).
+
+    notes: optional {(tool, full_id): one-line why}, printed under the row it
+    belongs to -- `ai search` passes the judge's justification there. Kept on
+    its own line rather than as a column because the table is already wide,
+    and a reason is prose, not a field."""
     if not rows:
         print("No sessions found.")
         return
@@ -1527,9 +1532,13 @@ def render_rows(rows, write_cache=True, start=1):
 
     header = f"{'#':>{w_num}}  {'TOOL':<{w_tool}}  {'WHEN':<{w_when}}  {'ID':<{w_id}}  {'CWD':<{w_cwd}}  TITLE"
     print(header)
-    for n, (tool, _full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
+    indent = " " * (w_num + 2)
+    for n, (tool, full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
         cwd_disp = cwd_show if len(cwd_show) <= w_cwd else "…" + cwd_show[-(w_cwd - 1):]
         print(f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  {title}")
+        why = (notes or {}).get((tool, full_id))
+        if why:
+            print(f"{indent}why: {why}")
 
 
 def extract_cwd_override(args):
