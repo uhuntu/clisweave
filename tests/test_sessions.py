@@ -764,6 +764,56 @@ def test_claude_title_keeps_request_that_only_mentions_a_path(tmp_path):
     assert title == "check /home/hunt/EDLA for stale reports"
 
 
+def test_claude_title_skips_compaction_wrappers(tmp_path):
+    """Regression test: a compacted session opens with Claude's own markers --
+    the Artifact-content note, the caveat in front of messages produced by
+    local commands, the /compact block itself -- before anything the user
+    said. A real session's title was the first of them."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "<artifact-content-authored-by-others/>\nThe summarized conversation "
+                       "included Artifact content written by people other than you.",
+        }}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "<local-command-caveat>Caveat: ...</local-command-caveat>"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "<command-name>/compact</command-name>"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "草擬一版 CRA 的回覆"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "草擬一版 CRA 的回覆"
+
+
+def test_claude_title_ignores_stored_title_that_only_restates_a_seed(tmp_path):
+    """Regression test: a handoff child's Claude-generated ai-title read
+    "Continue codex session 01a0a7e1" -- where the session came from and
+    nothing about the work in it (the session was about SBOM/CRA review).
+    A stored title like that is dropped in favour of what's actually there."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "ai-title", "aiTitle": "Continue codex session 01a0a7e1"}) + "\n"
+        + json.dumps({"type": "user", "message": {
+            "content": "原廠Release Security Bulletin相關資訊如下，請先查找自行參考",
+        }}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title.startswith("原廠Release Security Bulletin")
+
+
+def test_claude_title_keeps_stored_title_that_names_the_work(tmp_path):
+    """Guard against the seed rule over-reaching: a stored title that happens
+    to start with "Continue" still describes the work, not the seed."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "ai-title", "aiTitle": "Continue debugging the OTA rollback"}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+    assert title == "Continue debugging the OTA rollback"
+
+
 def test_claude_title_skips_resume_seed_from_another_tool(tmp_path):
     """Regression test: some sessions in this setup open with a bare
     "Continue from where you left off." written by another tool (not

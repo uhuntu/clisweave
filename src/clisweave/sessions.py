@@ -281,6 +281,10 @@ TOOL_STARTED_TITLES = (JUDGE_SESSION_TITLE, CODEX_APPROVAL_SESSION_TITLE)
 INJECTED_PREFIXES = (
     "<scheduled-task", "<system-reminder", "<command-message", "<command-name",
     "<local-command-stdout", "<bash-input", "<bash-stdout", "<bash-stderr",
+    # Both injected around a compacted/resumed conversation: the marker for
+    # Artifact content the summary may restate, and the caveat in front of
+    # messages produced by local commands (the /compact block below it).
+    "<artifact-content-authored-by-others/>", "<local-command-caveat>",
     # Claude Code's own marker for a cancelled turn -- a real session had it
     # as the *only* alternative to a pasted transcript, so it became the
     # title of an otherwise perfectly recognizable conversation.
@@ -291,6 +295,22 @@ INJECTED_PREFIXES = (
     CONTINUATION_PROMPT_PREFIX,
     RESUME_SEED_PREFIX,
 )
+
+
+# Claude Code names a session itself, and can name it after the seed that
+# opened it: a real handoff child's generated ai-title read "Continue codex
+# session 01a0a7e1" -- a restatement of clisweave's seed, describing where
+# the session came from and nothing of the work in it. Those are dropped so
+# the title falls back to what the session actually contains.
+SEED_TITLE_RE = re.compile(r"^Continue \w+ session\b")
+
+
+def is_seed_restatement(title):
+    """True if a stored title (custom-title / ai-title) merely restates a
+    seed message rather than naming the work -- see SEED_TITLE_RE."""
+    return bool(SEED_TITLE_RE.match(title.strip())) or title.strip().startswith(
+        (RESUME_SEED_PREFIX, CONTINUATION_PROMPT_PREFIX, JUDGE_PROMPT_PREFIX)
+    )
 
 
 def is_image_only(text):
@@ -447,9 +467,9 @@ def claude_title_and_cwd(path, cwd_fallback):
                     title = stripped[:70]
     except FileNotFoundError:
         pass
-    if custom_title and custom_title != "New session":
+    if custom_title and custom_title != "New session" and not is_seed_restatement(custom_title):
         resolved = custom_title
-    elif ai_title:
+    elif ai_title and not is_seed_restatement(ai_title):
         resolved = ai_title
     else:
         resolved = _title_or_placeholder(title, fallback)
