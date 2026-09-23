@@ -197,6 +197,34 @@ def test_cmd_search_shows_judge_reasons_only_when_asked(monkeypatch, capsys):
     assert shown[1] == {("codex", "id-1"): "upgrades it from A13"}
 
 
+def test_cmd_search_prints_the_matches_in_the_judges_own_order(monkeypatch):
+    """The judge is asked to list its strongest hit first. Without carrying
+    that order through, hits print most-recent-first, which buries the
+    session that is actually about the topic under ones that only mention it
+    in passing."""
+    fake_candidates = [
+        {"tool": "claude", "id": "id-new", "ts": 30, "title": "hello"},
+        {"tool": "codex", "id": "id-old", "ts": 10, "title": "upgrade the firmware"},
+    ]
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "/work/" + r["id"], r["title"],
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    monkeypatch.setattr(sessions, "literal_matches", lambda candidates, topic: [])
+    shown = []
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: shown.append(rows))
+    # Older session listed first: the judge ranked it the stronger match.
+    monkeypatch.setattr(
+        search, "run_judge_with_fallback",
+        lambda prompt, n, judge, explicit, label: ({2: "is about this firmware", 1: "mentions it once"}, judge),
+    )
+
+    search.cmd_search(["IDC_Series android13 firmware"])
+
+    assert [row[1] for row in shown[0]] == ["id-old", "id-new"]
+
+
 def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys):
     """A judge run's session contains every candidate's text, so it matches
     nearly any topic; a codex approval review contains the transcript it

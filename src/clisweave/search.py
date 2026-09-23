@@ -156,9 +156,15 @@ def build_prompt(topic, entries):
         # One line per match, with the reason: it makes the judge commit to a
         # link instead of ticking a number, and the reason is shown with the
         # result so a weak match is recognizable as one.
+        # Order is part of the answer: the judge sees the content, so it is
+        # the only thing here that can tell a session about the topic from one
+        # that mentions it in passing. Hits otherwise print most-recent-first,
+        # which buried the one on-topic session of a real 22-hit search under
+        # rows that merely share a word with the query.
         "Reply with ONLY one line per match, in this form -- the number, a "
         "colon, then a few words saying what links it to the topic:\n"
-        "7: upgrades the IDC_Series firmware from A13\n\n"
+        "7: upgrades the IDC_Series firmware from A13\n"
+        "List the most relevant match first and the weakest last.\n\n"
         "No other text. If none are relevant, reply with the single word: none\n\n"
         + "\n".join(lines)
     )
@@ -370,11 +376,17 @@ def cmd_search(argv):
             )
         return {offset + n: why for n, why in reasons_local.items()}, used_judge
 
+    # Per chunk, so the judge's own ordering can be read back afterwards:
+    # each batch ranks only the candidates it saw, and batches complete out of
+    # order, so ranks have to be rebuilt chunk by chunk (chunks stay in
+    # candidate order, which is most-recent-first).
+    chunk_reasons = {}
     matched_reasons = {}
     used_judge = judge
     if n_chunks == 1:
         try:
             matched_reasons, used_judge = process_chunk(0)
+            chunk_reasons[0] = matched_reasons
         except JudgeError as e:
             if exact_ids:
                 print("ai search: semantic search failed; showing exact matches only", file=sys.stderr)
@@ -388,20 +400,22 @@ def cmd_search(argv):
         try:
             first_matches, used_judge = process_chunk(0)
             matched_reasons.update(first_matches)
+            chunk_reasons[0] = first_matches
         except JudgeError:
             failures += 1
 
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(MAX_CONCURRENT_BATCHES, n_chunks - 1)
         ) as pool:
-            futures = [
-                pool.submit(process_chunk, i, used_judge)
+            futures = {
+                pool.submit(process_chunk, i, used_judge): i
                 for i in range(1, n_chunks)
-            ]
+            }
             for fut in concurrent.futures.as_completed(futures):
                 try:
                     chunk_matches, _ = fut.result()
                     matched_reasons.update(chunk_matches)
+                    chunk_reasons[futures[fut]] = chunk_matches
                 except JudgeError:
                     failures += 1
         if failures == n_chunks:
@@ -413,10 +427,20 @@ def cmd_search(argv):
         if failures:
             print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
 
+    # The judge lists its strongest hit first; that order is the only ranking
+    # available (it is the one thing here that actually read the content), so
+    # it carries over to the listing instead of the recency order the
+    # candidates happen to be in.
+    rank = {}
+    for chunk_idx in range(n_chunks):
+        for n in chunk_reasons.get(chunk_idx, ()):
+            rank[n] = len(rank)
+
     matched_indices = set(matched_reasons)
-    matched = [row for n, row in enumerate(rows, start=1) if n in matched_indices]
+    numbered = [(n, row) for n, row in enumerate(rows, start=1) if n in matched_indices]
+    numbered.sort(key=lambda pair: rank.get(pair[0], 0))
     # Already reported in the exact section -- don't list a session twice.
-    semantic = [row for row in matched if (row[0], row[1]) not in exact_ids]
+    semantic = [row for n, row in numbered if (row[0], row[1]) not in exact_ids]
     # The judge's own one-line justification. Off by default: it doubles the
     # height of the listing, and most rows are clear enough from the title --
     # `--why` prints it under each match when a hit needs explaining.
