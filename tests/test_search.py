@@ -56,6 +56,14 @@ def test_build_prompt_states_a_relevance_bar():
     assert "when you are unsure, leave it out" in prompt
 
 
+def test_build_prompt_requires_concrete_evidence():
+    """A real search listed `Hello` sessions from an `android-cts` directory:
+    the only thing linking them to the topic was where they ran."""
+    prompt = search.build_prompt("nfc issue", [("claude", "/b", "hi", "hi there")])
+    assert "something concrete in it" in prompt
+    assert "merely ran in a related directory" in prompt
+
+
 def test_build_prompt_numbers_entries_in_order():
     prompt = search.build_prompt("nfc issue", [
         ("codex", "/a", "Find isnfcon", "Find isnfcon"),
@@ -223,6 +231,35 @@ def test_cmd_search_prints_the_matches_in_the_judges_own_order(monkeypatch):
     search.cmd_search(["IDC_Series android13 firmware"])
 
     assert [row[1] for row in shown[0]] == ["id-old", "id-new"]
+
+
+def test_cmd_search_shows_only_the_top_of_a_long_hit_list(monkeypatch, capsys):
+    """Hits are ranked, so the tail is the weakest of them -- listing all of
+    them is what makes a broad search hard to scan."""
+    fake_candidates = [
+        {"tool": "claude", "id": f"id-{n}", "ts": n, "title": f"t{n}"}
+        for n in range(search.SEMANTIC_ROWS_SHOWN + 3)
+    ]
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "/work", r["title"],
+    ))
+    monkeypatch.setattr(search, "snippet_for", lambda r: "")
+    monkeypatch.setattr(sessions, "literal_matches", lambda candidates, topic: [])
+    shown = []
+    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: shown.append(rows))
+    all_numbers = {n: "reason" for n in range(1, len(fake_candidates) + 1)}
+    monkeypatch.setattr(
+        search, "run_judge_with_fallback",
+        lambda prompt, n, judge, explicit, label: (all_numbers, judge),
+    )
+
+    search.cmd_search(["firmware"])
+    assert len(shown[0]) == search.SEMANTIC_ROWS_SHOWN
+    assert "and 3 weaker matches not shown" in capsys.readouterr().out
+
+    search.cmd_search(["--all", "firmware"])
+    assert len(shown[1]) == len(fake_candidates)
 
 
 def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys):

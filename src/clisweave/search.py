@@ -96,6 +96,12 @@ JUDGE_TIMEOUT_SECONDS = 120
 # can safely fan out without probing an unavailable judge over and over.
 MAX_CONCURRENT_BATCHES = 8
 
+# The judge ranks its hits strongest-first, so the tail is the weakest of them
+# -- mostly sessions that share a field with the topic rather than being about
+# it. Since a long list is what makes a search hard to scan, only the top of
+# it is shown; `--all` lists every hit.
+SEMANTIC_ROWS_SHOWN = 15
+
 
 class JudgeError(Exception):
     """A judge call failed unrecoverably. Carries a process-style exit
@@ -150,6 +156,12 @@ def build_prompt(topic, entries):
         "device, project, file, error, or question -- not merely something in "
         "the same field. Sharing a word, a tool, or a domain with the topic is "
         "not enough, and neither is mentioning it once in passing.\n"
+        "Only count a session if you can point at something concrete in it that "
+        "ties it to the topic -- a file, path, command, error, log line, or "
+        "version. A session that merely ran in a related directory or under a "
+        "related project is not a match unless its content shows the topic "
+        "itself; neither is one whose title just happens to use the topic's "
+        "words.\n"
         "Be strict: when you are unsure, leave it out. A short list of "
         "confident hits beats a long one padded with maybes, and returning few "
         "-- or none -- is fine.\n\n"
@@ -290,6 +302,7 @@ def cmd_search(argv):
     judge = DEFAULT_JUDGE
     judge_explicit = False
     show_why = False
+    show_all = False
     topic_parts = []
 
     i = 0
@@ -317,13 +330,16 @@ def cmd_search(argv):
         elif a == "--why":
             show_why = True
             i += 1
+        elif a == "--all":
+            show_all = True
+            i += 1
         else:
             topic_parts.append(a)
             i += 1
 
     topic = " ".join(topic_parts).strip()
     if not topic:
-        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--why]", file=sys.stderr)
+        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--why] [--all]", file=sys.stderr)
         sys.exit(1)
 
     candidates = gather_candidates(tool_filter)
@@ -453,6 +469,11 @@ def cmd_search(argv):
         print("No relevant sessions found.")
         return
 
+    hidden = 0
+    if not show_all and len(semantic) > SEMANTIC_ROWS_SHOWN:
+        hidden = len(semantic) - SEMANTIC_ROWS_SHOWN
+        semantic = semantic[:SEMANTIC_ROWS_SHOWN]
+
     # One cache write for the union in printed order, so `ai resume <N>`
     # numbers stay valid across both sections.
     sessions.write_list_cache(
@@ -464,3 +485,6 @@ def cmd_search(argv):
     if semantic:
         print(f"semantic matches (judge: {used_judge}):")
         sessions.render_rows(semantic, write_cache=False, start=len(exact_rows) + 1, notes=notes)
+    if hidden:
+        noun = "weaker match" if hidden == 1 else "weaker matches"
+        print(f"... and {hidden} {noun} not shown -- `ai search {topic!r} --all` lists every hit.")
