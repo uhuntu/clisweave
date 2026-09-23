@@ -182,9 +182,9 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
     assert [row[1] for row in rendered[0]] == ["id-1"]
 
 
-def test_cmd_search_shows_judge_reasons_only_when_asked(monkeypatch, capsys):
-    """The reason doubles the height of the listing and most rows are clear
-    from the title, so it is behind `--why`."""
+def test_cmd_search_passes_the_judges_reasons_and_full_only_when_asked(monkeypatch, capsys):
+    """Reasons are shown by default in a clipped column; `--why` asks for the
+    whole line instead."""
     fake_candidates = [{"tool": "codex", "id": "id-1", "ts": 1, "title": "Rebuild the firmware"}]
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -192,17 +192,20 @@ def test_cmd_search_shows_judge_reasons_only_when_asked(monkeypatch, capsys):
     ))
     monkeypatch.setattr(search, "snippet_for", lambda r: "")
     shown = []
-    monkeypatch.setattr(sessions, "render_rows", lambda rows, **kw: shown.append(kw.get("notes")))
+    monkeypatch.setattr(
+        sessions, "render_rows",
+        lambda rows, **kw: shown.append((kw.get("notes"), kw.get("full_notes"))),
+    )
     monkeypatch.setattr(
         search, "run_judge_with_fallback",
         lambda prompt, n, judge, explicit, label: ({1: "upgrades it from A13"}, judge),
     )
 
     search.cmd_search(["firmware"])
-    assert shown[0] is None  # no reason lines by default
+    assert shown[0] == ({("codex", "id-1"): "upgrades it from A13"}, False)
 
     search.cmd_search(["--why", "firmware"])
-    assert shown[1] == {("codex", "id-1"): "upgrades it from A13"}
+    assert shown[1] == ({("codex", "id-1"): "upgrades it from A13"}, True)
 
 
 def test_cmd_search_prints_the_matches_in_the_judges_own_order(monkeypatch):
@@ -717,7 +720,7 @@ def _capture_output_sections(monkeypatch):
     rendered = []
     monkeypatch.setattr(
         sessions, "render_rows",
-        lambda rows, write_cache=True, start=1, notes=None: rendered.append(
+        lambda rows, write_cache=True, start=1, notes=None, full_notes=False: rendered.append(
             (list(rows), write_cache, start)
         ),
     )

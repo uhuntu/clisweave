@@ -2234,14 +2234,58 @@ def test_render_rows_can_continue_search_numbering(capsys):
     assert capsys.readouterr().out.splitlines()[-1].lstrip().startswith("49  codex")
 
 
-def test_render_rows_prints_a_note_under_its_row(capsys):
-    """`ai search` passes the judge's one-line justification here. It goes on
-    its own line: the table is already wide, and a reason is prose."""
+@pytest.fixture
+def terminal_width(monkeypatch):
+    def _set(cols):
+        monkeypatch.setattr(
+            sessions.shutil, "get_terminal_size",
+            lambda fallback=None: os.terminal_size((cols, 24)),
+        )
+    return _set
+
+
+def test_render_rows_shows_a_note_as_a_column(capsys, terminal_width):
+    """`ai search` passes the judge's one-line justification here. It shares
+    the row instead of adding one: ten hits stay ten lines."""
+    terminal_width(120)
     rows = [
         ("codex", "id-1", "1h ago", "id-1", "/work", "Rebuild the firmware"),
         ("codex", "id-2", "2h ago", "id-2", "/work", "Unrelated chat"),
     ]
     sessions.render_rows(rows, write_cache=False, notes={("codex", "id-1"): "upgrades IDC from A13"})
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3  # header + one line per row
+    assert lines[0].rstrip().endswith("WHY")
+    assert lines[1].rstrip().endswith("upgrades IDC from A13")
+    assert "upgrades" not in lines[2]
+    assert max(len(line) for line in lines) <= 120
+
+
+def test_render_rows_clips_a_note_to_the_terminal(capsys, terminal_width):
+    """A narrow terminal has to clip the reason, not wrap the row."""
+    terminal_width(70)
+    rows = [("codex", "id-1", "1h ago", "id-1", "/work/x", "Rebuild the firmware")]
+    sessions.render_rows(
+        rows, write_cache=False,
+        notes={("codex", "id-1"): "upgrades the IDC_Series firmware from A13 to A15"},
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert max(len(line) for line in lines) <= 70
+    assert lines[1].endswith("…")
+
+
+def test_render_rows_prints_the_whole_note_when_asked(capsys):
+    """`--why`: the unclipped reason, on its own line."""
+    rows = [
+        ("codex", "id-1", "1h ago", "id-1", "/work", "Rebuild the firmware"),
+        ("codex", "id-2", "2h ago", "id-2", "/work", "Unrelated chat"),
+    ]
+    sessions.render_rows(
+        rows, write_cache=False,
+        notes={("codex", "id-1"): "upgrades IDC from A13"}, full_notes=True,
+    )
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[2].strip().startswith("why: upgrades IDC from A13")

@@ -7,6 +7,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1527,16 +1528,29 @@ def is_tool_started_row(row):
     return row[5] in TOOL_STARTED_TITLES
 
 
-def render_rows(rows, write_cache=True, start=1, notes=None):
+# A reason is prose, and the table is already wide, so it gets the space
+# that's left rather than a share of its own.
+WHY_MAX_WIDTH = 50
+WHY_MIN_WIDTH = 12
+TITLE_MIN_WIDTH = 12
+TITLE_WITH_WHY_MAX_WIDTH = 44
+
+
+def _clip(text, width):
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
     """rows: list of resolve_row()-shaped tuples, already in display order.
     Prints the numbered table and, unless write_cache=False, writes the
     resume cache (cmd_search renders two sections with continuing numbers
     and writes the cache once for their union).
 
-    notes: optional {(tool, full_id): one-line why}, printed under the row it
-    belongs to -- `ai search` passes the judge's justification there. Kept on
-    its own line rather than as a column because the table is already wide,
-    and a reason is prose, not a field."""
+    notes: optional {(tool, full_id): one-line why} -- `ai search` passes the
+    judge's justification there. Shown as a WHY column, clipped to whatever
+    width the terminal has left after the other fields: one line per hit, so
+    a 10-hit search stays 10 lines. `full_notes` prints the unclipped reason
+    on its own line instead, which is what `--why` is for."""
     if not rows:
         print("No sessions found.")
         return
@@ -1544,20 +1558,47 @@ def render_rows(rows, write_cache=True, start=1, notes=None):
     if write_cache:
         write_list_cache([{"tool": tool, "id": full_id} for tool, full_id, *_ in rows])
 
+    notes = notes or {}
     w_num = len(str(start + len(rows) - 1))
     w_tool = max(4, max(len(r[0]) for r in rows))
     w_when = max(4, max(len(r[2]) for r in rows))
     w_id = max(2, max(len(r[3]) for r in rows))
-    w_cwd = min(40, max(3, max(len(r[4]) for r in rows)))
+    # The reason needs room, so the working directory gives some up.
+    inline_why = bool(notes) and not full_notes
+    w_cwd = min(24 if inline_why else 40, max(3, max(len(r[4]) for r in rows)))
+
+    w_title = 0
+    w_why = 0
+    if inline_why:
+        fixed = w_num + w_tool + w_when + w_id + w_cwd + 10  # 2 spaces between fields
+        spare = shutil.get_terminal_size((100, 24)).columns - fixed
+        if spare >= TITLE_MIN_WIDTH + WHY_MIN_WIDTH + 2:
+            # Roughly even, leaning to the reason: a title that's clipped to a
+            # few characters is still recognizable from its first words, while
+            # a reason clipped that short says nothing.
+            w_title = max(TITLE_MIN_WIDTH, min(TITLE_WITH_WHY_MAX_WIDTH, int(spare * 0.45)))
+            w_why = max(WHY_MIN_WIDTH, min(WHY_MAX_WIDTH, spare - w_title - 2))
+        else:
+            # Too narrow for both floors: split what's left rather than push
+            # the row past the terminal edge and wrap it.
+            w_why = max(1, spare // 2)
+            w_title = max(1, spare - w_why - 2)
 
     header = f"{'#':>{w_num}}  {'TOOL':<{w_tool}}  {'WHEN':<{w_when}}  {'ID':<{w_id}}  {'CWD':<{w_cwd}}  TITLE"
+    if inline_why:
+        header += f"{'':<{max(0, w_title - 5)}}  WHY"
     print(header)
     indent = " " * (w_num + 2)
     for n, (tool, full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
         cwd_disp = cwd_show if len(cwd_show) <= w_cwd else "…" + cwd_show[-(w_cwd - 1):]
-        print(f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  {title}")
-        why = (notes or {}).get((tool, full_id))
-        if why:
+        line = f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  "
+        if inline_why:
+            line += f"{_clip(title, w_title):<{w_title}}  {_clip(notes.get((tool, full_id), ''), w_why)}"
+        else:
+            line += title
+        print(line.rstrip())
+        why = notes.get((tool, full_id))
+        if full_notes and why:
             print(f"{indent}why: {why}")
 
 

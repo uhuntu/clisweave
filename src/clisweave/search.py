@@ -457,13 +457,14 @@ def cmd_search(argv):
     numbered.sort(key=lambda pair: rank.get(pair[0], 0))
     # Already reported in the exact section -- don't list a session twice.
     semantic = [row for n, row in numbered if (row[0], row[1]) not in exact_ids]
-    # The judge's own one-line justification. Off by default: it doubles the
-    # height of the listing, and most rows are clear enough from the title --
-    # `--why` prints it under each match when a hit needs explaining.
+    # The judge's own one-line justification, shown as a WHY column next to
+    # each hit: a hit whose title gives nothing away ("Hello", "Yes go") is
+    # otherwise indistinguishable from a wrong one. `--why` prints the reason
+    # in full on its own line instead of clipped to fit.
     notes = {
         (rows[n - 1][0], rows[n - 1][1]): why
         for n, why in matched_reasons.items() if why
-    } if show_why else None
+    }
 
     if not exact_rows and not semantic:
         print("No relevant sessions found.")
@@ -484,7 +485,10 @@ def cmd_search(argv):
         sessions.render_rows(exact_rows, write_cache=False)
     if semantic:
         print(f"semantic matches (judge: {used_judge}):")
-        sessions.render_rows(semantic, write_cache=False, start=len(exact_rows) + 1, notes=notes)
+        sessions.render_rows(
+            semantic, write_cache=False, start=len(exact_rows) + 1,
+            notes=notes, full_notes=show_why,
+        )
     if hidden:
         noun = "weaker match" if hidden == 1 else "weaker matches"
         print(f"... and {hidden} {noun} not shown -- `ai search {topic!r} --all` lists every hit.")

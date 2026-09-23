@@ -86,7 +86,7 @@ ai 3 codex                  # hand row 3's context to a new Codex session
 ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
 ai search "katago" --tool claude           # restrict the candidates to one tool
 ai search "..." --judge kimi               # use a different model to judge relevance
-ai search "..." --why                      # also print the judge's one-line reason per match
+ai search "..." --why                      # print each hit's reason in full, on its own line
 ai search "..." --all                      # list every hit, not just the strongest 10
 
 ai stats                    # session counts per tool, oldest/newest, top directories
@@ -119,7 +119,7 @@ It is also asked to name its strongest hit first, and that order is what gets pr
 
 It must also point at something concrete — a file, command, error, or version — rather than count a session whose only link is the directory it ran in. Asked for that, the same search still returns `Hello` and `Yes go` rows from `android-vts`, but now with the specific commit behind each (`A13 VTS NFC HAL OpenAfterOpen fix`), which is what makes them worth keeping.
 
-It has to say *why* each match counts: the judge answers one line per match (`7: upgrades the firmware from A13`) rather than a bare list of numbers, which makes it commit to a link instead of ticking a box. Those lines are off by default — they double the height of the listing — and `--why` prints each one under its row. Handy when a hit looks wrong: a row titled `Hello` in an `android-vts` directory turned out to be a real A13 VTS fix, which the title alone gives no hint of.
+It has to say *why* each match counts: the judge answers one line per match (`7: upgrades the firmware from A13`) rather than a bare list of numbers, which makes it commit to a link instead of ticking a box. The reason prints as a WHY column beside the hit, clipped to whatever width the terminal has left over, so ten hits stay ten lines. `--why` prints it in full on its own line instead. That column is what makes a hit with a useless title readable: a row titled `Hello` in an `android-vts` directory is a real A13 VTS fix (`A13 VTS NFC HAL OpenAfterOpen fix committed to the A13 SDK`), which nothing else in the row suggests.
 
 ### Normalized flags (`ai <tool> ...`)
 
