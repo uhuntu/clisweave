@@ -88,6 +88,19 @@ def read_jsonl(path):
 
 # ---------- claude ----------
 
+def decode_project_dir_name(proj_dir):
+    """Best-effort path from a claude project directory name, used only when
+    a transcript carries no cwd of its own. Claude encodes every
+    non-alphanumeric as "-", so "/" and "." both come back as a separator and
+    the decode is a guess either way; a run of them is one separator, which
+    at least keeps the guess a normal-looking path --
+    "-home-hunt--openclaw-workspace" decoded literally to
+    "/home/hunt//openclaw/workspace", a double slash no real path has."""
+    if not proj_dir.startswith("-"):
+        return proj_dir
+    return re.sub(r"-+", "/", proj_dir)
+
+
 def claude_light_records():
     # Claude Code stores a session's transcript under more than one project
     # directory when the session touches more than one cwd (e.g. via `cd` in
@@ -108,7 +121,7 @@ def claude_light_records():
                 continue
             if sid in by_id and by_id[sid]["ts"] >= mtime:
                 continue
-            cwd_guess = proj_dir.replace("-", "/") if proj_dir.startswith("-") else proj_dir
+            cwd_guess = decode_project_dir_name(proj_dir)
             by_id[sid] = {"tool": "claude", "id": sid, "ts": mtime, "path": path, "cwd": cwd_guess}
     return list(by_id.values())
 
@@ -130,6 +143,11 @@ TRIVIAL_TITLES = {
     "yes", "no", "ok", "okay", "sure", "yep", "yeah", "nope", "please",
     "continue", "go ahead", "do it", "thanks", "thank you", "correct",
     "proceed", "fine", "alright", "got it", "sounds good", "lgtm",
+    # A greeting opening a session before the real question is the same
+    # problem as a bare "Yes": real listings had "hi" and "Hello" as titles
+    # for sessions whose next message held the actual request. A session
+    # whose *only* message is a greeting still shows it, via the fallback.
+    "hi", "hello",
 }
 
 
@@ -206,8 +224,9 @@ def claude_snippet(path, max_messages=12, max_chars=800):
                     continue
                 if d.get("type") not in ("user", "assistant"):
                     continue
-                text = extract_text_from_content(d.get("message", {}).get("content"))
-                if text:
+                text = unwrap_openclaw_ctx(
+                    extract_text_from_content(d.get("message", {}).get("content")) or "")
+                if text.strip():
                     texts.append(text.strip().replace("\n", " "))
     except FileNotFoundError:
         pass
@@ -243,6 +262,34 @@ IMAGE_MESSAGE_PREFIX = "[Image:"
 # request that follow -- and it propagates, since `ai handoff` titles a child
 # session by its source's title.
 RESUME_SEED_PREFIX = "Continue from where you left off"
+
+# A bridge (openclaw) relays a chat message into a session behind a context
+# header naming the chat, the sender and the time, with the person's own
+# words after it:
+#   Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019",
+#   "sender":{...}} ``` 哈哈
+# A real listing showed that whole header as the session's title, chat id and
+# all. Unlike the injected messages above, the real text is *inside* the same
+# message rather than missing from it, so this one is unwrapped rather than
+# skipped -- see unwrap_openclaw_ctx.
+OPENCLAW_CTX_PREFIX = "Conversation info: ⟦openclaw:ctx⟧"
+
+
+def unwrap_openclaw_ctx(text):
+    """Drop openclaw's context header, keeping what was actually said after
+    it -- see OPENCLAW_CTX_PREFIX. Returns "" when the message held nothing
+    but the header (a bare relayed attachment, say), so callers treat it as
+    an empty message instead of titling a session by a chat id."""
+    stripped = text.lstrip()
+    if not stripped.startswith(OPENCLAW_CTX_PREFIX):
+        return text
+    rest = stripped[len(OPENCLAW_CTX_PREFIX):].strip()
+    # The header's payload is a fenced json block, so whatever follows it is
+    # the message; no closing fence means there was nothing but the header.
+    if rest.startswith("```"):
+        end = rest.find("```", 3)
+        rest = "" if end == -1 else rest[end + 3:]
+    return rest.strip()
 
 # Injected when a session is picked up after it ran out of context: the
 # recap of the conversation being continued, ahead of anything the user
@@ -454,6 +501,9 @@ def claude_title_and_cwd(path, cwd_fallback):
                     continue
                 text = extract_text_from_content(d.get("message", {}).get("content"))
                 if not text:
+                    continue
+                text = unwrap_openclaw_ctx(text)
+                if not text.strip():
                     continue
                 stripped = " ".join(text.split())
                 # a captionless screenshot names nothing, so it can't stand
@@ -718,7 +768,15 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                 text = extract_text_from_content(payload.get("content"), text_types=("input_text", "text", "output_text"))
                 if not text:
                     continue
+                text = unwrap_openclaw_ctx(text)
                 stripped = text.strip()
+                # Codex writes an empty "user" message for a content block it
+                # can't represent at all (a pasted image with no caption);
+                # it names nothing, and as the last text standing it used to
+                # become an empty fallback and collapse the row to
+                # `(no title)`, even with real messages after it.
+                if not stripped:
+                    continue
                 # The clipboard-paste and response-annotation wrappers both
                 # append what the user actually typed after this marker --
                 # when that trailing part is non-empty, it's what the
@@ -798,6 +856,23 @@ def codex_cwd(sid):
     return None
 
 
+def codex_parent_thread_id(sid):
+    """The thread this codex rollout forked from, or None -- see
+    FORK_TITLE_MARK. Codex's subagent threads and Codex Desktop's forks both
+    record one in session_meta; a plain resumed run does not, and a rollout
+    that names the session itself as its parent is a continuation of that
+    thread rather than a fork of it."""
+    path = codex_rollout_path(sid)
+    if not path:
+        return None
+    for d in read_jsonl(path):
+        if d.get("type") == "session_meta":
+            parent = (d.get("payload") or {}).get("parent_thread_id")
+            return parent if parent and parent != sid else None
+        break
+    return None
+
+
 def codex_resolve(prefix):
     ids = {sid for sid in codex_thread_names() if sid.startswith(prefix)}
     ids |= {sid for sid in build_codex_path_index() if sid.startswith(prefix)}
@@ -846,6 +921,31 @@ def kimi_light_records(show_all):
     return records
 
 
+# kimi records a name of its own in state.json, along with how it got it:
+# "generated" is one kimi wrote, "replaceable" is a placeholder it will
+# replace once there is something to go on (a session opened by an
+# uncaptioned screenshot sits at "[image]"), and sessions from before that
+# schema just say "New Session". Only a real name is worth showing -- and
+# only as a last resort, because it is derived from whatever kimi saw first
+# (often the same screenshot or paste the wire scan already rejects), so an
+# actual user prompt always beats it.
+KIMI_PLACEHOLDER_TITLES = {"new session", "[image]"}
+
+
+def kimi_stored_title(sdir):
+    """kimi's own name for a session, or None when it has none worth showing
+    -- see KIMI_PLACEHOLDER_TITLES."""
+    state = read_json(os.path.join(sdir, "state.json")) or {}
+    title = state.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    if title.strip().lower() in KIMI_PLACEHOLDER_TITLES:
+        return None
+    if state.get("titleKind") != "generated" and not state.get("isCustomTitle"):
+        return None
+    return " ".join(title.split())[:70]
+
+
 def kimi_title(sdir):
     """First *genuine* user prompt in the session's wire log.
 
@@ -873,7 +973,7 @@ def kimi_title(sdir):
                 for block in d.get("input", []):
                     if not (isinstance(block, dict) and block.get("type") == "text"):
                         continue
-                    raw = block.get("text", "")
+                    raw = unwrap_openclaw_ctx(block.get("text", ""))
                     stripped = " ".join(raw.split())
                     if not stripped:
                         continue
@@ -886,7 +986,15 @@ def kimi_title(sdir):
                     break
     except FileNotFoundError:
         pass
-    return _title_or_placeholder(title, fallback)
+    resolved = _title_or_placeholder(title, fallback)
+    if resolved == "(no title)":
+        # Nothing in the wire log to name it by: newer kimi builds keep a
+        # screenshot paste's prompt in context.append_message rather than
+        # turn.prompt, so a session opened by an image has no text here at
+        # all. kimi names such a session itself -- show its name rather than
+        # a blank row (see kimi_stored_title for what it won't show).
+        return kimi_stored_title(sdir) or resolved
+    return resolved
 
 
 def kimi_snippet(sdir, max_messages=12, max_chars=800):
@@ -938,7 +1046,7 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
                     continue
                 for block in blocks:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        t = block.get("text", "").strip().replace("\n", " ")
+                        t = unwrap_openclaw_ctx(block.get("text", "")).strip().replace("\n", " ")
                         if t:
                             texts.append(t)
                         break
@@ -1442,6 +1550,24 @@ def cmd_stats(args):
 
 HANDOFF_SEED_RE = re.compile(r"Continue the work from this (\w+) session \(([^)\s]+)\)")
 HANDOFF_TITLE_MARK = "(handoff) "
+# A codex fork or subagent thread: its rollout opens with the parent's
+# context rather than a request of its own, so it has no title to show --
+# 64 of the 98 forked rollouts on one machine read `(no title)`. Codex
+# records the thread it came from (session_meta.parent_thread_id) and that
+# thread usually does have a title, so the fork is named after it, the way a
+# handoff is named after the session it continues.
+FORK_TITLE_MARK = "(fork) "
+
+
+def _without_inherited_mark(title):
+    """Drop the mark a title carries when it is inherited from somewhere
+    else, so following a chain of handoffs/forks still reads as one topic
+    (`(fork) 排查 run.sh 启动卡住`) rather than stacking marks
+    (`(fork) (handoff) 排查 run.sh 启动卡住`)."""
+    for mark in (HANDOFF_TITLE_MARK, FORK_TITLE_MARK):
+        if title.startswith(mark):
+            return title[len(mark):]
+    return title
 # A handoff of a handoff is followed back toward the original topic; the cap
 # is only a guard against a cycle in the (hand-editable) session stores.
 HANDOFF_MAX_DEPTH = 5
@@ -1528,10 +1654,22 @@ def _resolve_title_and_cwd(r, depth=0):
         record = _find_record(*source) if source else None
         if record:
             source_title = _resolve_title_and_cwd(record, depth + 1)[0]
-            if source_title.startswith(HANDOFF_TITLE_MARK):
-                source_title = source_title[len(HANDOFF_TITLE_MARK):]
+            source_title = _without_inherited_mark(source_title)
             if source_title != "(no title)" and source_title not in TOOL_STARTED_TITLES:
                 title = HANDOFF_TITLE_MARK + source_title
+
+    # A codex fork has no request of its own to be named by -- see
+    # FORK_TITLE_MARK. Its parent is the one thread that can identify the
+    # row, so inherit that title (without the mark it may carry itself, so a
+    # fork of a fork still shows a single one). An unnamed parent, or one of
+    # the sessions a tool started for itself, leaves the row as it was.
+    if title == "(no title)" and tool == "codex" and depth < HANDOFF_MAX_DEPTH:
+        parent = codex_parent_thread_id(r["id"])
+        parent_row = _find_record("codex", parent) if parent else None
+        if parent_row:
+            source_title = _without_inherited_mark(_resolve_title_and_cwd(parent_row, depth + 1)[0])
+            if source_title != "(no title)" and source_title not in TOOL_STARTED_TITLES:
+                title = FORK_TITLE_MARK + source_title
     return title, cwd_show
 
 

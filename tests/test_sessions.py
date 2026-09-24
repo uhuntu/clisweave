@@ -18,7 +18,7 @@ def _reset_codex_path_cache():
 
 
 def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None,
-                        stamp="2026-08-14T00-00-00"):
+                        stamp="2026-08-14T00-00-00", parent=None):
     """Create a minimal codex rollout file, the actual on-disk source of
     truth codex_light_records() now scans directly (session_index.jsonl is
     only an optional title-enrichment source, not guaranteed to exist).
@@ -26,14 +26,21 @@ def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None,
     `stamp` is the timestamp codex puts in the rollout filename, which also
     picks its day directory. A resumed thread writes a *second* file for the
     same id under a later stamp, so a test that wants that shape passes one
-    (plus an `mtime` per file, mtime being what marks one as current)."""
+    (plus an `mtime` per file, mtime being what marks one as current).
+
+    `parent` writes the session_meta a fork/subagent thread carries -- see
+    codex_parent_thread_id."""
     year, month, day = stamp[:10].split("-")
     day_dir = codex_home / "sessions" / year / month / day
     day_dir.mkdir(parents=True, exist_ok=True)
     path = day_dir / f"rollout-{stamp}-{sid}.jsonl"
+    payload = {"id": sid, "cwd": cwd}
+    if parent:
+        payload["session_id"] = parent
+        payload["parent_thread_id"] = parent
     lines = [json.dumps({
         "timestamp": f"{year}-{month}-{day}T00:00:00.000Z", "type": "session_meta",
-        "payload": {"id": sid, "cwd": cwd},
+        "payload": payload,
     })]
     if user_text is not None:
         lines.append(json.dumps({
@@ -196,6 +203,41 @@ def test_codex_resumed_thread_reads_title_and_cwd_from_newest_rollout(monkeypatc
 
     assert row[5] == "why is the OTA rollback looping?"  # title
     assert row[4] == "/work/new"  # cwd
+
+
+def test_codex_title_ignores_a_whitespace_only_user_message(monkeypatch, tmp_path):
+    """Regression test: Codex serializes a pasted image as a "user" message
+    whose text block is just a newline next to the image block. Sitting
+    first, that whitespace-only text took the fallback slot, so a session
+    whose only other message was a bare "yes" collapsed to `(no title)`
+    instead of showing that "yes"."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    path = write_codex_rollout(codex_home, sid, cwd="/x")
+    with open(path, "a", encoding="utf-8") as fh:
+        for text in ("\n", "yes"):
+            fh.write(json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            }}) + "\n")
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "yes"
+
+
+def test_codex_title_uses_the_message_behind_an_openclaw_header(monkeypatch, tmp_path):
+    """Same relayed-message header as claude's, straight into a codex
+    rollout: the trailing text is the request, the header is not."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    write_codex_rollout(codex_home, sid, cwd="/x", user_text=(
+        'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019"} ``` '
+        "check the proxy routing"))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    assert sessions.codex_rollout_title(sid) == "check the proxy routing"
 
 
 def test_codex_rollout_title_skips_injected_boilerplate(monkeypatch, tmp_path):
@@ -674,6 +716,77 @@ def test_resolve_row_codex_falls_back_to_rollout_title_and_cwd(monkeypatch, tmp_
     assert row[4] == "/data/hunt/work"  # cwd
 
 
+def test_codex_fork_is_named_after_the_thread_it_forked_from(monkeypatch, tmp_path):
+    """Regression test: a fork/subagent thread opens on its parent's context
+    rather than a request of its own, so its row read `(no title)` -- 64 of
+    the 98 forked rollouts on one machine -- even though Codex records the
+    thread it came from in session_meta."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    parent = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    fork = "01a0cc5d-d1f3-7d51-8b08-411fb596e64a"
+    write_codex_rollout(codex_home, parent, cwd="/x",
+                        user_text="why does the OTA boot loop roll back?")
+    write_codex_rollout(codex_home, fork, cwd="/x", parent=parent)
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == fork))
+
+    assert row[5] == "(fork) why does the OTA boot loop roll back?"
+
+
+def test_codex_fork_of_a_fork_shows_a_single_marker(monkeypatch, tmp_path):
+    """Inherited titles have their own mark stripped before being reused, so
+    following a chain of forks still reads as one topic, not `(fork)
+    (fork) ...`."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    root = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    mid = "01a0cc5d-d1f3-7d51-8b08-411fb596e64a"
+    leaf = "01a0cc5d-d1f3-7d51-8b08-411fb596e64b"
+    write_codex_rollout(codex_home, root, cwd="/x", user_text="排查 run.sh 启动卡住")
+    write_codex_rollout(codex_home, mid, cwd="/x", parent=root)
+    write_codex_rollout(codex_home, leaf, cwd="/x", parent=mid)
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    rows = {r["id"]: sessions.resolve_row(r) for r in sessions.codex_light_records()}
+
+    assert rows[mid][5] == "(fork) 排查 run.sh 启动卡住"
+    assert rows[leaf][5] == "(fork) 排查 run.sh 启动卡住"
+
+
+def test_codex_fork_with_an_unnamed_parent_stays_untitled(monkeypatch, tmp_path):
+    """Nothing worth inheriting: the parent's own rollout holds no request
+    either, so the row keeps `(no title)` rather than becoming
+    `(fork) (no title)`."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    parent = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    fork = "01a0cc5d-d1f3-7d51-8b08-411fb596e64a"
+    write_codex_rollout(codex_home, parent, cwd="/x")
+    write_codex_rollout(codex_home, fork, cwd="/x", parent=parent)
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == fork))
+
+    assert row[5] == "(no title)"
+
+
+def test_codex_rollout_naming_itself_as_its_own_parent_is_not_a_fork(monkeypatch, tmp_path):
+    """Codex also writes a thread's own id as parent_thread_id (a further run
+    of the same thread), which is not a fork -- the row must keep the prompt
+    it has instead of inheriting a title from itself."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "019ffdbe-12ce-7e22-9a7f-30237f491124"
+    write_codex_rollout(codex_home, sid, cwd="/x", user_text="fix the parser", parent=sid)
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == sid))
+
+    assert row[5] == "fix the parser"
+
+
 def test_codex_resolve_prefix_match(monkeypatch, tmp_path):
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
@@ -721,6 +834,25 @@ def test_claude_light_records_dedupes_same_session_across_project_dirs(monkeypat
     recs = sessions.claude_light_records()
     assert len(recs) == 1
     assert recs[0]["path"] == str(new_copy)  # kept the more recently modified copy
+
+
+def test_claude_cwd_guess_collapses_encoded_separators(monkeypatch, tmp_path):
+    """Regression test: claude encodes both "/" and "." as "-", so its
+    project-directory name is only ever a guess at the real path -- but
+    decoding a run of them literally produced a double slash
+    ("/home/hunt//openclaw/workspace"), which is no path at all. Used only
+    when the transcript carries no cwd of its own."""
+    projects = tmp_path / "projects"
+    proj = projects / "-home-hunt--openclaw-workspace"
+    proj.mkdir(parents=True)
+    (proj / "abcd1234.jsonl").write_text(
+        json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
+
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+
+    recs = sessions.claude_light_records()
+
+    assert recs[0]["cwd"] == "/home/hunt/openclaw/workspace"
 
 
 def test_claude_title_and_cwd_prefers_real_cwd_over_dirname_guess(tmp_path):
@@ -850,6 +982,95 @@ def test_claude_title_skips_compaction_wrappers(tmp_path):
 
     title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
     assert title == "草擬一版 CRA 的回覆"
+
+
+def test_unwrap_openclaw_ctx_keeps_only_what_was_said():
+    header = 'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019"} ``` '
+    assert sessions.unwrap_openclaw_ctx(header + "修复这个构建问题") == "修复这个构建问题"
+    # nothing but the header: no name to show, and no chat id either
+    assert sessions.unwrap_openclaw_ctx(header) == ""
+    assert sessions.unwrap_openclaw_ctx('  Conversation info: ⟦openclaw:ctx⟧ hello') == "hello"
+    assert sessions.unwrap_openclaw_ctx("fix the parser") == "fix the parser"
+
+
+def test_claude_title_uses_the_message_behind_an_openclaw_header(tmp_path):
+    """Regression test: a real listing showed the whole openclaw context
+    header as a session's title -- chat id, JSON and all -- because the
+    message it relays carries the person's own words *after* the header."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(json.dumps({
+        "type": "user",
+        "message": {"content":
+                    'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019",'
+                    '"message_id":"638592339664733176"} ``` 哈哈'},
+    }) + "\n")
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "哈哈"
+
+
+def test_claude_title_treats_a_header_only_relay_as_empty(tmp_path):
+    """A relayed attachment with no comment holds nothing to name the
+    session by, so the next genuine message decides instead of the header."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": 'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"x"} ``` '}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "check the proxy routing"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "check the proxy routing"
+
+
+def test_snippets_show_the_message_behind_an_openclaw_header(tmp_path):
+    """A snippet is what `ai search`'s judge reads, and the relay's header is
+    chat metadata rather than content -- it shouldn't be what a search
+    matches on or reads past."""
+    header = 'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019"} ``` '
+
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(json.dumps({
+        "type": "user", "message": {"content": header + "the OTA rollback loop"}}) + "\n")
+    claude_snippet = sessions.claude_snippet(str(session_file))
+
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+        "type": "turn.prompt", "input": [{"type": "text", "text": header + "the OTA rollback loop"}],
+    }) + "\n")
+    kimi_snippet = sessions.kimi_snippet(str(sess_dir))
+
+    for snippet in (claude_snippet, kimi_snippet):
+        assert "the OTA rollback loop" in snippet
+        assert "stepfun:429019" not in snippet
+
+
+def test_claude_title_skips_a_greeting_before_the_real_request(tmp_path):
+    """A session opened with "hi" and then the actual question was titled
+    "hi" -- the same problem a bare acknowledgement has."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "why is the OTA rollback looping?"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "why is the OTA rollback looping?"
+
+
+def test_claude_title_still_shows_a_lone_greeting(tmp_path):
+    """With nothing behind it a greeting is all the session holds, so the
+    fallback keeps it rather than showing `(no title)`."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(json.dumps({"type": "user", "message": {"content": "Hello"}}) + "\n")
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "Hello"
 
 
 def test_claude_title_ignores_stored_title_that_only_restates_a_seed(tmp_path):
@@ -1231,6 +1452,106 @@ def test_kimi_resolve_tries_session_prefix_fallback(monkeypatch, tmp_path):
     assert sessions.kimi_resolve("97946bc7") == ["session_97946bc7-c5d4-4419-85d1-1316cb7f4295"]
     # already-prefixed also works
     assert sessions.kimi_resolve("session_97946bc7") == ["session_97946bc7-c5d4-4419-85d1-1316cb7f4295"]
+
+
+def test_kimi_title_uses_kimis_own_name_when_the_wire_has_no_text(tmp_path):
+    """Regression test: newer kimi builds keep a prompt's image in
+    context.append_message rather than turn.prompt, so a session opened by
+    an uncaptioned screenshot has no text at all in the wire log to title it
+    by -- but kimi has already named it, and that name is what makes the row
+    recognizable instead of `(no title)`."""
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+        "type": "turn.prompt",
+        "input": [{"type": "image_url", "imageUrl": {"url": "kimi-file://f_05cf", "name": "image.png"}}],
+    }) + "\n")
+    (sess_dir / "state.json").write_text(json.dumps({
+        "title": "Cline sign-in policy denied error",
+        "titleKind": "generated", "isCustomTitle": False,
+    }))
+
+    assert sessions.kimi_title(str(sess_dir)) == "Cline sign-in policy denied error"
+
+
+def test_kimi_title_ignores_kimis_placeholder_names(tmp_path):
+    """kimi's own name is only worth showing when it is a real one:
+    "[image]" is what it puts on a session it is still waiting to name, and
+    "New Session" is its default -- neither names anything."""
+    for n, state in enumerate(({"title": "[image]", "titleKind": "replaceable"},
+                               {"title": "New Session", "titleKind": None})):
+        sess_dir = tmp_path / f"sessdir{n}"
+        (sess_dir / "agents" / "main").mkdir(parents=True)
+        (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+            "type": "turn.prompt",
+            "input": [{"type": "image_url", "imageUrl": {"url": "kimi-file://f_05cf"}}],
+        }) + "\n")
+        (sess_dir / "state.json").write_text(json.dumps(state))
+
+        assert sessions.kimi_title(str(sess_dir)) == "(no title)"
+
+
+def test_kimi_title_only_trusts_a_name_kimi_committed_to(tmp_path):
+    """A "replaceable" title is a provisional one kimi will overwrite, and a
+    session from before the schema carries no kind at all -- neither is a
+    name to build a row on. A user-set (custom) name is."""
+    cases = (
+        ({"title": "Cline sign-in policy denied error", "titleKind": "replaceable"}, "(no title)"),
+        ({"title": "Some older name"}, "(no title)"),
+        ({"title": "My own name for this", "isCustomTitle": True}, "My own name for this"),
+    )
+    for n, (state, expected) in enumerate(cases):
+        sess_dir = tmp_path / f"sessdir{n}"
+        (sess_dir / "agents" / "main").mkdir(parents=True)
+        (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+            "type": "turn.prompt",
+            "input": [{"type": "image_url", "imageUrl": {"url": "kimi-file://f_05cf"}}],
+        }) + "\n")
+        (sess_dir / "state.json").write_text(json.dumps(state))
+
+        assert sessions.kimi_title(str(sess_dir)) == expected, state
+
+
+def test_kimi_title_prefers_a_real_prompt_over_kimis_own_name(tmp_path):
+    """The stored name is derived from whatever kimi saw first, so an actual
+    prompt always beats it -- even one the scan only keeps as a fallback."""
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+        "type": "turn.prompt", "input": [{"type": "text", "text": "fix the updater"}],
+    }) + "\n")
+    (sess_dir / "state.json").write_text(json.dumps({
+        "title": "[image]", "titleKind": "replaceable",
+    }))
+
+    assert sessions.kimi_title(str(sess_dir)) == "fix the updater"
+
+
+def test_kimi_title_keeps_wire_text_over_a_stored_name(tmp_path):
+    """Even a pasted transcript -- a prompt the scan rejects and keeps only
+    as the fallback -- wins over the stored name, which in that case was
+    generated from that same paste."""
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+        "type": "turn.prompt", "input": [{"type": "text", "text": "$ kimi update\nerror: fetch failed"}],
+    }) + "\n")
+    (sess_dir / "state.json").write_text(json.dumps({
+        "title": "Fix the updater", "titleKind": "generated",
+    }))
+
+    assert sessions.kimi_title(str(sess_dir)).startswith("$ kimi update")
+
+
+def test_kimi_title_uses_the_message_behind_an_openclaw_header(tmp_path):
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(json.dumps({
+        "type": "turn.prompt", "input": [{"type": "text", "text":
+            'Conversation info: ⟦openclaw:ctx⟧ ```json {"chat_id":"stepfun:429019"} ``` 修复这个构建问题'}],
+    }) + "\n")
+
+    assert sessions.kimi_title(str(sess_dir)) == "修复这个构建问题"
 
 
 def test_kimi_title_skips_pasted_shell_transcript(tmp_path):
@@ -2665,6 +2986,27 @@ def test_codex_handoff_from_a_claude_session_shows_the_claude_topic(monkeypatch,
     row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == sid))
 
     assert row[5] == "(handoff) why does the OTA boot loop roll back?"
+
+
+def test_codex_fork_of_a_handoff_child_shows_one_mark(monkeypatch, tmp_path):
+    """A fork of a session `ai handoff` started inherits that session's
+    topic, and the inherited title drops the handoff's own mark -- a real
+    listing showed `(fork) (handoff) 开源扫描工具` for one, which says the
+    same thing twice."""
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "src-1", "why does the OTA boot loop roll back?")
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    child = "01a018ff-5a11-7b2c-9d30-4f67e8a90130"
+    fork = "01a0cc5d-d1f3-7d51-8b08-411fb596e64a"
+    write_codex_rollout(codex_home, child, cwd="/x", user_text=_handoff_seed("claude", "src-1"))
+    write_codex_rollout(codex_home, fork, cwd="/x", parent=child)
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+
+    row = sessions.resolve_row(next(r for r in sessions.codex_light_records() if r["id"] == fork))
+
+    assert row[5] == "(fork) why does the OTA boot loop roll back?"
 
 
 def test_titles_collapse_runs_of_whitespace(tmp_path):
