@@ -906,6 +906,79 @@ def test_claude_title_skips_scheduled_task_injection(tmp_path):
     assert cwd == "/home/hunt"
 
 
+def test_claude_title_skips_task_notification(tmp_path):
+    """Regression: Claude Code reports a finished background task as a
+    *user*-role record wrapped in `<task-notification> … <task-id> …
+    <tool-use-id> …` -- a notification, not a request. A real session's title
+    had become `<task-notification> <task-id>bieqice6h…`, naming nothing."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {
+            "content": "<task-notification>\n<task-id>bieqice6h</task-id>\n"
+                       "<tool-use-id>toolu_01RffxaZYVWYAmZp5LyqbbTJ</tool-use-id>\n"
+                       "<status>completed</status>\n<summary>done</summary>\n"
+                       "</task-notification>"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "clean up the old codex release directories"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "clean up the old codex release directories"
+
+
+@pytest.mark.parametrize("deferral", [
+    "You decide", "your call", "you pick", "you choose", "your choice", "up to you",
+])
+def test_claude_title_skips_decision_deferral(tmp_path, deferral):
+    """"you decide" and its ilk hand the choice back to the assistant -- the
+    same nameless reply as "go ahead"/"do it" -- so the title is the request
+    that follows, not the deferral."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": deferral}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "clean up the old codex release directories"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "clean up the old codex release directories"
+
+
+def test_claude_title_still_shows_a_lone_deferral(tmp_path):
+    """With nothing behind it a deferral is all the session holds, so the
+    fallback keeps it rather than showing `(no title)` -- skipped for the
+    *title*, never for the fallback that stands in behind one."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(json.dumps({"type": "user", "message": {"content": "You decide"}}) + "\n")
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "You decide"
+
+
+def test_claude_title_skips_deferral_followed_by_a_task_notification(tmp_path):
+    """The two fixes are coupled, and this pins why: skipping the deferral
+    hands the title to whatever message follows, which here is a
+    `<task-notification>`. Deferrals *alone* land on the notification;
+    the injected-skip *alone* lands on the deferral; only with both does the
+    title become the real request. Mirrors a real session (opened "hi", then
+    a pasted dump, then "You decide", then a finished task, then the work)."""
+    session_file = tmp_path / "s.jsonl"
+    session_file.write_text(
+        json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "You decide"}}) + "\n"
+        + json.dumps({"type": "user", "message": {
+            "content": "<task-notification>\n<task-id>bieqice6h</task-id>\n"
+                       "<tool-use-id>toolu_01RffxaZYVWYAmZp5LyqbbTJ</tool-use-id>\n"
+                       "</task-notification>"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "clean up the old codex release directories"}}) + "\n"
+    )
+
+    title, _cwd = sessions.claude_title_and_cwd(str(session_file), cwd_fallback=None)
+
+    assert title == "clean up the old codex release directories"
+
+
 def test_claude_title_skips_pasted_shell_transcript(tmp_path):
     """Regression test: two real claude sessions were titled from a pasted
     terminal transcript -- `(hunt@hunt-OptiPlex-7071)-[~] $ traecli ...` and
@@ -1567,6 +1640,26 @@ def test_kimi_title_skips_pasted_shell_transcript(tmp_path):
     )
 
     assert sessions.kimi_title(str(sess_dir)) == "fix the updater"
+
+
+def test_kimi_title_skips_task_notification_and_deferral(tmp_path):
+    """kimi injects a completed background task like claude does, but spelled
+    <notification id="task:...">. A real session opened with a pasted dump,
+    was answered "You decide", then a task notification -- with only the
+    deferral treated as trivial and the notice still unrecognized, the title
+    strands on that notice. Both forms must be skipped to reach the request."""
+    sess_dir = tmp_path / "sessdir"
+    (sess_dir / "agents" / "main").mkdir(parents=True)
+    (sess_dir / "agents" / "main" / "wire.jsonl").write_text(
+        json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "You decide"}]}) + "\n"
+        + json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": (
+            '<notification id="task:bash-ljatmanv:completed" category="task" '
+            'type="task.completed" source_kind="bash" status="succeeded"/>'
+        )}]}) + "\n"
+        + json.dumps({"type": "turn.prompt", "input": [{"type": "text", "text": "still being sized?"}]}) + "\n"
+    )
+
+    assert sessions.kimi_title(str(sess_dir)) == "still being sized?"
 
 
 def test_kimi_title_skips_scheduled_task_reminder(tmp_path):

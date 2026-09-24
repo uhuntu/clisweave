@@ -143,6 +143,13 @@ TRIVIAL_TITLES = {
     "yes", "no", "ok", "okay", "sure", "yep", "yeah", "nope", "please",
     "continue", "go ahead", "do it", "thanks", "thank you", "correct",
     "proceed", "fine", "alright", "got it", "sounds good", "lgtm",
+    # Handing the choice back is go-ahead/do-it wearing different words: a
+    # real session opened with a greeting, ran a pasted terminal dump, was
+    # answered You decide -- and that two-word deferral titled work that was
+    # actually about cleaning up old release directories. Needs the
+    # <task-notification> skip in INJECTED_PREFIXES, or skipping these just
+    # lands the title on the notification that followed them.
+    "you decide", "your call", "you pick", "you choose", "your choice", "up to you",
     # A greeting opening a session before the real question is the same
     # problem as a bare "Yes": real listings had "hi" and "Hello" as titles
     # for sessions whose next message held the actual request. A session
@@ -329,6 +336,18 @@ TOOL_STARTED_TITLES = (JUDGE_SESSION_TITLE, CODEX_APPROVAL_SESSION_TITLE)
 INJECTED_PREFIXES = (
     "<scheduled-task", "<system-reminder", "<command-message", "<command-name",
     "<local-command-stdout", "<bash-input", "<bash-stdout", "<bash-stderr",
+    # Claude Code reports a finished background task as a *user*-role record
+    # wrapped in <task-notification> ... -- a notification, not a request, that
+    # would otherwise be titled by it verbatim. It also gates the deferral
+    # phrases in TRIVIAL_TITLES: skipping these first keeps an opening answered
+    # with a deferral from falling through that filter onto the notification.
+    "<task-notification",
+    # kimi spells the same idea differently -- a finished background task
+    # injected as <notification id="task:..." ...>. Recognizing it has the
+    # same coupled rationale: skipping a deferral hands the title to the
+    # notice that follows, so its form must be recognized too (a real kimi
+    # session landed on exactly this). Distinctive prefix, per the note above.
+    "<notification id=",
     # Both injected around a compacted/resumed conversation: the marker for
     # Artifact content the summary may restate, and the caveat in front of
     # messages produced by local commands (the /compact block below it).
