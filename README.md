@@ -55,7 +55,12 @@ ai update all    # both
 
 `ai update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
 
-`ai update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
+`ai update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
+
+Two fallbacks exist for flaky networks, both confirmed live on 2026-09-24:
+
+- **Retries**: `claude` (no fallback mirror; can hit its own internal download deadline) and `kimi` (its update check intermittently hangs at connect time) are retried on failure.
+- **Proxy fallback**: set `CLISWEAVE_UPDATE_PROXY` (e.g. `http://127.0.0.1:7897`) and any failed tool update retries through that proxy. The first attempt is always direct, so this only ever kicks in as a fallback. This exists because some networks sever long TLS transfers mid-flight — codex's ~146MB asset died at ~60MB on every direct attempt, resume ignored, while the same transfer through a working local proxy finished in under a minute. `kimi update` passes `--yes` so its interactive picker can't abort the run.
 
 Equivalent manual commands for updating clisweave itself, if you'd rather:
 

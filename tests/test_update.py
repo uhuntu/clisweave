@@ -114,7 +114,7 @@ def test_update_tools_runs_each_installed_tools_update_command(monkeypatch):
     monkeypatch.setattr(update.subprocess, "run", fake_run)
 
     assert update.update_tools() == 0
-    assert calls == [["claude", "update"], ["codex", "update"], ["kimi", "update"]]
+    assert calls == [["claude", "update"], ["codex", "update"], ["kimi", "update", "--yes"]]
 
 
 def test_update_tools_prints_hint_when_claude_fails(monkeypatch, capsys):
@@ -163,6 +163,7 @@ def test_update_tools_retries_claude_and_succeeds_without_hint(monkeypatch, caps
 
 def test_update_tools_gives_up_after_exhausting_retries(monkeypatch):
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
 
     class FakeResult:
         returncode = 1
@@ -180,19 +181,117 @@ def test_update_tools_gives_up_after_exhausting_retries(monkeypatch):
     assert calls.count("claude") == 1 + update.TOOL_UPDATE_RETRIES["claude"]
 
 
-def test_update_tools_no_hint_when_codex_or_kimi_fail(monkeypatch, capsys):
+def test_update_tools_retries_kimi(monkeypatch):
+    """kimi's update check intermittently hangs at connect time; a bare retry
+    usually gets through, same failure class as claude."""
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     class FakeResult:
         def __init__(self, code):
             self.returncode = code
 
-    codes = {"claude": 0, "codex": 1, "kimi": 1}
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv[0])
+        if argv[0] == "kimi" and seen.count("kimi") == 1:
+            return FakeResult(1)  # failed check, then succeeds on retry
+        return FakeResult(0)
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_tools() == 0
+    # failed once, then succeeded on the first retry (didn't need all of them)
+    assert seen.count("kimi") == 2
+
+
+def test_update_tools_first_attempt_is_direct_retry_goes_via_proxy(monkeypatch):
+    """With CLISWEAVE_UPDATE_PROXY set, a failed codex update retries through
+    the proxy (and succeeds): this network severs codex's ~146MB direct
+    transfer at ~60MB every time, while the proxy path completes in a minute."""
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setenv(update.UPDATE_PROXY_ENV, "http://127.0.0.1:7897")
+    monkeypatch.setenv("no_proxy", "example.invalid")
+
+    seen = []
+
+    class FakeResult:
+        def __init__(self, code):
+            self.returncode = code
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv[0], kwargs.get("env")))
+        if argv[0] == "codex" and len([s for s in seen if s[0] == "codex"]) == 1:
+            return FakeResult(1)  # direct attempt fails...
+        return FakeResult(0)  # ...proxy retry succeeds
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_tools() == 0
+
+    codex_attempts = [env for tool, env in seen if tool == "codex"]
+    assert len(codex_attempts) == 2
+    # first attempt: direct (env=None means inherit-as-is)
+    assert codex_attempts[0] is None
+    # retry: forced through the proxy, no_proxy exemptions stripped
+    retry_env = codex_attempts[1]
+    assert retry_env["http_proxy"] == "http://127.0.0.1:7897"
+    assert retry_env["https_proxy"] == "http://127.0.0.1:7897"
+    assert "no_proxy" not in retry_env
+
+
+def test_update_tools_retry_stays_direct_when_no_proxy_configured(monkeypatch):
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 0
+
+    envs = []
+
+    def fake_run(argv, **kwargs):
+        envs.append(kwargs.get("env"))
+        return FakeResult()
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_tools() == 0
+    assert envs and all(env is None for env in envs)
+
+
+def test_update_tools_no_hint_when_kimi_fails(monkeypatch, capsys):
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+
+    class FakeResult:
+        def __init__(self, code):
+            self.returncode = code
+
+    codes = {"claude": 0, "codex": 0, "kimi": 1}
     monkeypatch.setattr(update.subprocess, "run", lambda argv, **kw: FakeResult(codes[argv[0]]))
 
     update.update_tools()
 
     assert "hint:" not in capsys.readouterr().err
+
+
+def test_update_tools_prints_proxy_hint_when_codex_fails(monkeypatch, capsys):
+    """codex's ~146MB asset dies at ~60MB on networks that sever long transfers;
+    the failure hint should point at the proxy escape hatch."""
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        def __init__(self, code):
+            self.returncode = code
+
+    codes = {"claude": 0, "codex": 1, "kimi": 0}
+    monkeypatch.setattr(update.subprocess, "run", lambda argv, **kw: FakeResult(codes[argv[0]]))
+
+    update.update_tools()
+
+    err = capsys.readouterr().err
+    assert "hint:" in err
+    assert update.UPDATE_PROXY_ENV in err
 
 
 def test_update_tools_reports_worst_exit_code_but_keeps_going(monkeypatch):
