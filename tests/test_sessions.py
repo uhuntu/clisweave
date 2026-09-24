@@ -17,15 +17,22 @@ def _reset_codex_path_cache():
     sessions._codex_path_index = None
 
 
-def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None):
+def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None,
+                        stamp="2026-08-14T00-00-00"):
     """Create a minimal codex rollout file, the actual on-disk source of
     truth codex_light_records() now scans directly (session_index.jsonl is
-    only an optional title-enrichment source, not guaranteed to exist)."""
-    day_dir = codex_home / "sessions" / "2026" / "08" / "14"
+    only an optional title-enrichment source, not guaranteed to exist).
+
+    `stamp` is the timestamp codex puts in the rollout filename, which also
+    picks its day directory. A resumed thread writes a *second* file for the
+    same id under a later stamp, so a test that wants that shape passes one
+    (plus an `mtime` per file, mtime being what marks one as current)."""
+    year, month, day = stamp[:10].split("-")
+    day_dir = codex_home / "sessions" / year / month / day
     day_dir.mkdir(parents=True, exist_ok=True)
-    path = day_dir / f"rollout-2026-08-14T00-00-00-{sid}.jsonl"
+    path = day_dir / f"rollout-{stamp}-{sid}.jsonl"
     lines = [json.dumps({
-        "timestamp": "2026-08-14T00:00:00.000Z", "type": "session_meta",
+        "timestamp": f"{year}-{month}-{day}T00:00:00.000Z", "type": "session_meta",
         "payload": {"id": sid, "cwd": cwd},
     })]
     if user_text is not None:
@@ -40,6 +47,16 @@ def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None):
     if mtime is not None:
         os.utime(path, (mtime, mtime))
     return path
+
+
+def scan_rollouts_newest_first(monkeypatch, paths):
+    """Pin codex_rollout_files() to hand paths back newest-first (as the
+    string paths the real scan yields), so a test with several rollout files
+    for one id controls which of them the scan reaches *last* -- filesystem
+    order is hash-arbitrary, and a scan whose result depends on it is exactly
+    the bug under test."""
+    monkeypatch.setattr(sessions, "codex_rollout_files",
+                        lambda: sorted((str(p) for p in paths), reverse=True))
 
 
 # ---------- relative_time ----------
@@ -128,6 +145,57 @@ def test_codex_light_records_prefers_index_title_when_available(monkeypatch, tmp
 
     recs = sessions.codex_light_records()
     assert recs[0]["title"] == "Fix login crash"
+
+
+def test_codex_light_records_dedupes_multiple_rollouts_for_same_id(monkeypatch, tmp_path):
+    """Regression test: resuming a codex thread appends a *new* rollout file
+    rather than extending the old one (the same id survives in the name,
+    with the fork's own id appended), so one session id owns several files
+    -- a real ~/.codex/sessions had one id with four. Only the newest is the
+    live transcript; the listing reported whichever file the scan happened
+    to reach last, which for that real id was the *oldest*, putting its row
+    hours behind the conversation's actual last activity."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a0a2d0-c1d1-7b50-9399-5bf49292139f"
+    now = time.time()
+    newest = write_codex_rollout(codex_home, sid, cwd="/new", user_text="resume the work",
+                                 mtime=now, stamp="2026-08-15T10-33-27")
+    stale = write_codex_rollout(codex_home, sid, cwd="/old", user_text="start the work",
+                                mtime=now - 5000)
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+    scan_rollouts_newest_first(monkeypatch, [newest, stale])
+
+    recs = sessions.codex_light_records()
+
+    assert len(recs) == 1
+    assert recs[0]["id"] == sid
+    assert recs[0]["ts"] == os.path.getmtime(newest)
+    assert sessions.codex_rollout_path(sid) == str(newest)
+    assert sessions.codex_rollout_path(sid) != str(stale)
+
+
+def test_codex_resumed_thread_reads_title_and_cwd_from_newest_rollout(monkeypatch, tmp_path):
+    """The dedupe only matters if the surviving file is the one readers
+    open: title, cwd, snippet, and the handoff transcript all go through
+    codex_rollout_path, so a pre-fix row showed the first run's prompt and
+    working directory for a thread that had since moved on."""
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    sid = "01a0a2d0-c1d1-7b50-9399-5bf49292139f"
+    now = time.time()
+    newest = write_codex_rollout(codex_home, sid, cwd="/work/new",
+                                 user_text="why is the OTA rollback looping?",
+                                 mtime=now, stamp="2026-08-15T10-33-27")
+    stale = write_codex_rollout(codex_home, sid, cwd="/work/old", user_text="hello there",
+                                mtime=now - 5000, stamp="2026-08-14T00-00-00")
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+    scan_rollouts_newest_first(monkeypatch, [newest, stale])
+
+    row = sessions.resolve_row(sessions.codex_light_records()[0])
+
+    assert row[5] == "why is the OTA rollback looping?"  # title
+    assert row[4] == "/work/new"  # cwd
 
 
 def test_codex_rollout_title_skips_injected_boilerplate(monkeypatch, tmp_path):

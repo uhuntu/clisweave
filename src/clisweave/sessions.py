@@ -527,15 +527,38 @@ def codex_thread_names():
 _codex_path_index = None
 
 
+def codex_rollout_files():
+    """Every rollout file under CODEX_HOME. Order is the filesystem's, not
+    recency -- callers must not depend on it (see build_codex_path_index)."""
+    sessions_dir = os.path.join(CODEX_HOME, "sessions")
+    return glob.glob(os.path.join(sessions_dir, "**", "*.jsonl"), recursive=True)
+
+
 def build_codex_path_index():
     global _codex_path_index
-    _codex_path_index = {}
-    sessions_dir = os.path.join(CODEX_HOME, "sessions")
-    for path in glob.glob(os.path.join(sessions_dir, "**", "*.jsonl"), recursive=True):
+    index = {}
+    for path in codex_rollout_files():
         m = UUID_RE.search(os.path.basename(path))
-        if m:
-            _codex_path_index[m.group(0)] = path
-    return _codex_path_index
+        if not m:
+            continue
+        sid = m.group(0)
+        # Resuming a codex thread appends a *new* rollout file that keeps the
+        # session id in its name (rollout-<time>-<id>_<fork-id>.jsonl), so one
+        # id can own several files -- a real ~/.codex/sessions had one id with
+        # four. Which of them glob lists last is directory order, not recency,
+        # and the older files are stale prefixes of the newest one, so letting
+        # that decide pointed every reader (title, snippet, cwd, handoff
+        # transcript) at the thread as it stood before it was last resumed.
+        prev = index.get(sid)
+        if prev is not None:
+            try:
+                if os.path.getmtime(path) <= os.path.getmtime(prev):
+                    continue
+            except OSError:
+                continue
+        index[sid] = path
+    _codex_path_index = index
+    return index
 
 
 def codex_rollout_path(sid):
@@ -551,20 +574,18 @@ def codex_light_records():
     # exist on disk same as any other session. So scan the rollout files
     # directly (the same source of truth claude/kimi already use), and use
     # session_index.jsonl only to borrow a nicer auto-generated title when
-    # one happens to be available for that id.
+    # one happens to be available for that id. build_codex_path_index()
+    # already collapsed a resumed thread's several rollout files down to its
+    # newest, so each id yields exactly one record here.
     thread_names = codex_thread_names()
-    path_index = build_codex_path_index()
-
-    by_id = {}
-    for sid, path in path_index.items():
+    records = []
+    for sid, path in build_codex_path_index().items():
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        if sid in by_id and by_id[sid]["ts"] >= mtime:
-            continue
-        by_id[sid] = {"tool": "codex", "id": sid, "ts": mtime, "title": thread_names.get(sid)}
-    return list(by_id.values())
+        records.append({"tool": "codex", "id": sid, "ts": mtime, "title": thread_names.get(sid)})
+    return records
 
 
 # Both this wrapper and the clipboard-paste one below append whatever the

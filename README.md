@@ -138,10 +138,10 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 `ai-sessions` reads each tool's native session storage — no shared index, no background process:
 
 - **claude**: `~/.claude/projects/*/*.jsonl`
-- **codex**: `~/.codex/session_index.jsonl` + `~/.codex/sessions/**/*.jsonl` for cwd lookup
+- **codex**: `~/.codex/sessions/**/*.jsonl`, plus `~/.codex/session_index.jsonl` for auto-generated titles
 - **kimi**: `~/.kimi-code/session_index.jsonl` + each session's `state.json` / `agents/main/wire.jsonl`
 
-Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing.
+Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing. Resuming a codex thread appends a *new* rollout file instead of extending the one it already had, so a single session id can own several; only the newest is read — for the row's timestamp, title, cwd, snippet, and any handoff.
 
 `kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all three tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
