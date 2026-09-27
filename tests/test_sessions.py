@@ -2240,8 +2240,8 @@ def test_handoff_by_number_to_kimi_seeds_print_run_then_resumes_it(monkeypatch, 
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     seed_calls = []
 
-    def fake_seed(extra, prompt):
-        seed_calls.append((extra, prompt))
+    def fake_seed(prompt):
+        seed_calls.append(prompt)
         return 0, "session_aaaa-1111-2222-3333-444444444444"
 
     monkeypatch.setattr(sessions, "_run_kimi_seed", fake_seed)
@@ -2250,16 +2250,17 @@ def test_handoff_by_number_to_kimi_seeds_print_run_then_resumes_it(monkeypatch, 
 
     sessions.handoff_by_number(1, "kimi", [])
 
-    assert seed_calls[0][0] == []
-    assert "complete conversation export" in seed_calls[0][1]
+    assert "complete conversation export" in seed_calls[0]
     assert calls == [["kimi", "-S", "session_aaaa-1111-2222-3333-444444444444"]]
     err = capsys.readouterr().err
     assert "seeding with one `kimi -p` run" in err
 
 
-def test_handoff_by_number_to_kimi_forwards_extra_flags_to_seed_and_resume(monkeypatch, tmp_path):
+def test_handoff_by_number_to_kimi_forwards_extra_flags_to_the_resume(monkeypatch, tmp_path):
     """Flags meant for the target tool (e.g. -y) apply to the interactive
-    continuation too, not just the one-shot seed run."""
+    continuation. They used to be spliced into the one-shot seed run as well,
+    as `kimi -y -p <prompt>` -- and `-p` there produced `kimi -p -p <prompt>`,
+    which kimi parsed as a subcommand name, so the handoff failed outright."""
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     cache_file = tmp_path / "last_list.json"
@@ -2270,14 +2271,39 @@ def test_handoff_by_number_to_kimi_forwards_extra_flags_to_seed_and_resume(monke
     )
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     seed_calls = []
-    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: seed_calls.append((extra, prompt)) or (0, "session_seed"))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda prompt: seed_calls.append(prompt) or (0, "session_seed"))
     calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
 
     sessions.handoff_by_number(1, "kimi", ["-y"])
 
-    assert seed_calls[0][0] == ["-y"]
+    # the seed run is bare: it exists only to persist the session, and any
+    # flag spliced into `kimi [flags] -p <prompt>` risks that form
+    assert seed_calls == [pytest.approx(seed_calls[0])]
+    assert seed_calls[0].startswith("Continue the work from this")
     assert calls == [["kimi", "-y", "-S", "session_seed"]]
+
+
+def test_handoff_to_kimi_drops_print_and_continue_from_the_resume(monkeypatch, tmp_path):
+    """`ai 3 kimi -p` used to build `kimi -p -p <prompt>` for the seed (a
+    prompt kimi parses as a subcommand name) and then `kimi -p -S <id>` for
+    the resume, where -p has no value. Neither survives kimi's own usage."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    cache_file = tmp_path / "last_list.json"
+    cache_file.write_text(json.dumps([{"tool": "codex", "id": "01a0"}]))
+    monkeypatch.setattr(sessions, "LIST_CACHE_FILE", str(cache_file))
+    monkeypatch.setattr(
+        sessions, "session_handoff_details", lambda _t, _s: (str(source_dir), "transcript"),
+    )
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda prompt: (0, "session_seed"))
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.handoff_by_number(1, "kimi", ["-p", "hello there", "--model", "kimi-k2"])
+
+    assert calls == [["kimi", "--model", "kimi-k2", "-S", "session_seed"]]
 
 
 def test_handoff_to_kimi_falls_back_to_index_when_resume_hint_unparseable(monkeypatch, tmp_path):
@@ -2294,7 +2320,7 @@ def test_handoff_to_kimi_falls_back_to_index_when_resume_hint_unparseable(monkey
         sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
     )
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
-    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (0, None))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda prompt: (0, None))
     monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: "session_from_index")
     calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
@@ -2316,7 +2342,7 @@ def test_handoff_to_kimi_seed_failure_aborts_without_resuming(monkeypatch, tmp_p
         sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
     )
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
-    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (2, None))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda prompt: (2, None))
     monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: pytest.fail("must not scan the index after a failed seed"))
     calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
@@ -2342,7 +2368,7 @@ def test_handoff_to_kimi_unresolvable_session_tells_user_how_to_continue(monkeyp
         sessions, "session_handoff_details", lambda _tool, _sid: (str(source_dir), "# Full conversation\nimportant end"),
     )
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
-    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda extra, prompt: (0, None))
+    monkeypatch.setattr(sessions, "_run_kimi_seed", lambda prompt: (0, None))
     monkeypatch.setattr(sessions, "_kimi_newest_session_since", lambda started: None)
     calls = []
     monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
@@ -2422,9 +2448,9 @@ def test_run_kimi_seed_relays_stream_and_parses_resume_hint(monkeypatch, capsys)
 
     monkeypatch.setattr(sessions.subprocess, "Popen", fake_popen)
 
-    rc, sid = sessions._run_kimi_seed(["-y"], "seed prompt")
+    rc, sid = sessions._run_kimi_seed("seed prompt")
 
-    assert seen["argv"] == ["kimi", "-y", "-p", "seed prompt"]
+    assert seen["argv"] == ["kimi", "-p", "seed prompt"]
     assert seen["stdout"] is sessions.subprocess.PIPE
     assert rc == 0
     assert sid == "session_9f8e-7d6c-5b4a-3210-fedcba987654"
@@ -2451,7 +2477,7 @@ def test_run_kimi_seed_without_hint_returns_no_session(monkeypatch, capsys):
 
     monkeypatch.setattr(sessions.subprocess, "Popen", lambda argv, stdout=None, stderr=None: _FakeProc([b"just a summary\n"], 0))
 
-    rc, sid = sessions._run_kimi_seed([], "seed prompt")
+    rc, sid = sessions._run_kimi_seed("seed prompt")
 
     assert (rc, sid) == (0, None)
     assert "just a summary" in capsys.readouterr().out
@@ -2464,7 +2490,7 @@ def test_run_kimi_seed_missing_kimi_exits_127(monkeypatch, capsys):
     monkeypatch.setattr(sessions.subprocess, "Popen", fake_popen)
 
     with pytest.raises(SystemExit) as exc:
-        sessions._run_kimi_seed([], "seed prompt")
+        sessions._run_kimi_seed("seed prompt")
 
     assert exc.value.code == 127
     assert "'kimi' not found on PATH" in capsys.readouterr().err
@@ -2791,6 +2817,71 @@ def test_literal_matches_tolerates_missing_files(tmp_path):
     assert sessions.literal_matches([_claude_record(tmp_path / "gone.jsonl")], "aria2c") == []
 
 
+# The literal pass answers "which sessions contain this" by scanning every
+# transcript, so it has to stay exact while it goes fast: it now rejects a line
+# on raw bytes before decoding it, and a pre-filter that is not a strict
+# superset of the real pattern loses a match with no way to notice.
+
+def test_literal_matches_still_finds_a_topic_in_a_line_with_non_ascii(tmp_path):
+    """The bytes cut only applies to a line that is itself ASCII; this one
+    isn't, so it has to take the decoded path and still match."""
+    f = tmp_path / "s.jsonl"
+    f.write_text(json.dumps({"type": "user", "message": {
+        "content": "用 aria2c 下载镜像，速度很慢"}}) + "\n")
+    assert [r["id"] for r in sessions.literal_matches([_claude_record(f)], "aria2c")] == ["claude-1"]
+
+
+def test_literal_matches_matches_a_non_ascii_topic(tmp_path):
+    """A non-ASCII topic gets no bytes cut at all, because folding case on
+    bytes is ASCII-only. The text scan has to be the one that matches it, so
+    this pins a Chinese topic against a Chinese transcript."""
+    f = tmp_path / "s.jsonl"
+    f.write_text(json.dumps({"type": "user", "message": {
+        "content": "排查 run.sh 启动卡住的问题"}}) + "\n")
+    assert [r["id"] for r in sessions.literal_matches([_claude_record(f)], "启动卡住")] == ["claude-1"]
+    assert sessions.literal_matches([_claude_record(f)], "没有提到的东西") == []
+
+
+def test_literal_matches_finds_a_topic_that_only_folds_via_unicode(tmp_path):
+    """U+212A KELVIN SIGN lowercases to an ASCII "k" and U+0130 to an "i", so
+    a session about a temperature expressed in kelvin matches a search for
+    "k" with no "k" anywhere in its bytes. Those two characters are the whole
+    set (enumerated over Unicode), and a cut taken on raw bytes has to let a
+    line holding one through to be judged properly."""
+    kelvin = chr(0x212A)
+    # The only "k" in the transcript is the Kelvin sign, in both spellings
+    # these files write non-ASCII as: raw UTF-8, and the escaped code point.
+    for ensure_ascii in (False, True):
+        f = tmp_path / "s.jsonl"
+        f.write_text(json.dumps({"type": "user", "message": {
+            "content": f"the {kelvin} value"}}, ensure_ascii=ensure_ascii) + chr(10),
+            encoding="utf-8")
+        assert sessions.literal_matches([_claude_record(f)], "k") == [_claude_record(f)], ensure_ascii
+
+
+def test_literal_matches_is_case_insensitive_in_both_directions(tmp_path):
+    """The bytes cut folds ASCII case; this pins it against a topic and a    transcript that disagree on case in either order."""
+    for topic, text in (("aria2c", "ARIA2C"), ("ARIA2C", "aria2c"), ("Aria2c", "aRIA2c")):
+        f = tmp_path / "s.jsonl"
+        f.write_text(json.dumps({"type": "user", "message": {"content": f"using {text} now"}}) + "\n")
+        assert sessions.literal_matches([_claude_record(f)], topic) == [_claude_record(f)], topic
+
+
+def test_literal_matches_stops_at_the_scan_limit(tmp_path):
+    """Bounded work: a transcript is not read forever, however interesting it
+    is past the cap. The cap is deliberately far past anything a normal
+    conversation reaches."""
+    f = tmp_path / "s.jsonl"
+    with open(f, "w", encoding="utf-8") as fh:
+        for _ in range(sessions.LITERAL_SCAN_LIMIT + 50):
+            fh.write(json.dumps({"type": "user", "message": {"content": "padding"}}) + "\n")
+        fh.write(json.dumps({"type": "user", "message": {"content": "aria2c at the very end"}}) + "\n")
+    assert sessions.literal_matches([_claude_record(f)], "aria2c") == []
+
+    f2 = tmp_path / "early.jsonl"
+    f2.write_text(json.dumps({"type": "user", "message": {"content": "aria2c at the start"}}) + "\n")
+    assert [r["id"] for r in sessions.literal_matches([_claude_record(f2)], "aria2c")] == ["claude-1"]
+
 def test_literal_matches_scans_kimi_wire(tmp_path):
     sdir = tmp_path / "session"
     (sdir / "agents" / "main").mkdir(parents=True)
@@ -3064,6 +3155,22 @@ def test_session_that_only_mentions_the_seed_is_not_a_handoff(monkeypatch, tmp_p
     titles = _resolved_titles(monkeypatch, tmp_path)
 
     assert not titles["talk"].startswith(sessions.HANDOFF_TITLE_MARK)
+
+
+def test_session_quoting_the_seed_in_a_later_message_is_not_a_handoff(monkeypatch, tmp_path):
+    """The seed has to *open* the session. A pasted copy of it in the second
+    message -- someone showing how a handoff row reads, or a review that
+    embeds another session's transcript -- is not what started this one."""
+    projects = tmp_path / "projects"
+    _write_claude_session(projects, "src-1", "why does the OTA boot loop roll back?")
+    _write_claude_session(
+        projects, "explains",
+        "here is the row a handoff produces, verbatim:",
+        _handoff_seed("claude", "src-1"))
+
+    titles = _resolved_titles(monkeypatch, tmp_path)
+
+    assert titles["explains"] == "here is the row a handoff produces, verbatim:"
 
 
 def test_codex_handoff_from_a_claude_session_shows_the_claude_topic(monkeypatch, tmp_path):

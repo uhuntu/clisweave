@@ -46,6 +46,39 @@ def test_judge_timeout_reports_cleanly(monkeypatch, capsys):
     assert "timed out after" in capsys.readouterr().err
 
 
+def test_judge_whose_stdout_is_unreadable_reports_cleanly(monkeypatch, capsys):
+    """A judge that emits invalid UTF-8 can lose its pipe mid-read, leaving
+    stdout as None on an otherwise successful run. Parsing that used to raise
+    AttributeError out of cmd_search as a traceback, instead of degrading to
+    exact matches the way every other judge failure does."""
+    class PipeLost:
+        returncode = 0
+        stdout = None
+        stderr = None
+
+    monkeypatch.setattr(search.subprocess, "run", lambda argv, **kw: PipeLost())
+
+    picked, judge = search.run_judge_with_fallback("prompt", 5, "claude", True, "batch")
+    assert picked == {}
+    assert judge == "claude"
+
+
+def test_judge_that_cannot_be_spawned_becomes_a_judge_error(monkeypatch, capsys):
+    """Spawning can fail without the binary being absent -- permission denied,
+    an argv too long for the platform -- and that escaped as a raw OSError
+    traceback rather than the "showing exact matches only" path."""
+    def no_exec(argv, **kwargs):
+        raise PermissionError(13, "Permission denied", argv[0])
+
+    monkeypatch.setattr(search.subprocess, "run", no_exec)
+
+    with pytest.raises(search.JudgeError) as exc_info:
+        search._call_judge("claude", "prompt")
+
+    assert exc_info.value.code == 127
+    assert "could not run 'claude'" in capsys.readouterr().err
+
+
 def test_build_prompt_states_a_relevance_bar():
     """Without one, a batch judge returns anything sharing a word or a field
     with the topic: one real search came back with 40 "matches", mostly
@@ -78,16 +111,32 @@ def test_build_prompt_numbers_entries_in_order():
 @pytest.mark.parametrize(
     "text,max_n,expected",
     [
-        ("1, 3, 5", 5, {1, 3, 5}),
-        ("1 and 3 and maybe also 5", 5, {1, 3, 5}),
-        ("none", 5, set()),
-        ("", 5, set()),
-        ("7, 8", 5, set()),  # out of range, dropped
-        ("2, 2, 2", 5, {2}),  # deduped
+        ("2: upgrades the IDC firmware\n7: A13 OTA notes\n", 10,
+         {2: "upgrades the IDC firmware", 7: "A13 OTA notes"}),
+        # a bare list, with and without separators
+        ("1, 4\n", 10, {1: "", 4: ""}),
+        ("1\n4\n", 10, {1: "", 4: ""}),
+        ("none", 10, {}),
+        ("", 10, {}),
+        # digits inside a reason are not picks
+        ("7: upgrades it from A13 to A15\n", 100, {7: "upgrades it from A13 to A15"}),
+        # ...and neither are digits in the prose around the answer: a judge
+        # saying "No matches (I checked all 7)" picked nothing, and printing
+        # session 7 as a hit with an empty WHY column was a real bug.
+        ("No matches (I checked all 7).\n", 10, {}),
+        ("I can only judge 5 at a time.\n", 10, {}),
+        # a bare number among numbered reasons still counts
+        ("7: upgrades the firmware from A13\n3\n", 20,
+         {7: "upgrades the firmware from A13", 3: ""}),
+        ("3\n7: upgrades the firmware from A13\n", 20,
+         {3: "", 7: "upgrades the firmware from A13"}),
+        # out of range and duplicates
+        ("7, 8", 5, {}),
+        ("2, 2, 2", 5, {2: ""}),
     ],
 )
-def test_parse_numbers(text, max_n, expected):
-    assert search.parse_numbers(text, max_n) == expected
+def test_parse_numbered_reasons(text, max_n, expected):
+    assert search.parse_numbered_reasons(text, max_n) == expected
 
 
 def test_gather_candidates_respects_tool_filter(monkeypatch):
@@ -97,6 +146,26 @@ def test_gather_candidates_respects_tool_filter(monkeypatch):
 
     assert [r["tool"] for r in search.gather_candidates(None)] == ["kimi", "codex", "claude"]
     assert [r["tool"] for r in search.gather_candidates("codex")] == ["codex"]
+
+
+def test_gather_candidates_passes_all_through_to_the_stores(monkeypatch):
+    """`ai search --all` means what it means for `ai sessions`: include
+    archived sessions. It used to be parsed by cmd_search and then dropped
+    here, leaving `kimi_light_records(show_all=False)` -- so a session you
+    could list with `ai sessions --all` was unreachable by `ai search --all`
+    in both the exact and the semantic pass."""
+    seen = {}
+    monkeypatch.setattr(sessions, "claude_light_records", lambda: [])
+    monkeypatch.setattr(sessions, "codex_light_records", lambda: [])
+
+    def fake_kimi(show_all):
+        seen["show_all"] = show_all
+        return [{"tool": "kimi", "ts": 1}]
+
+    monkeypatch.setattr(sessions, "kimi_light_records", fake_kimi)
+
+    search.gather_candidates(None, show_all=True)
+    assert seen["show_all"] is True
 
 
 def test_snippet_for_dispatches_per_tool(monkeypatch):
@@ -149,7 +218,7 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
         {"tool": "claude", "id": "id-2", "ts": 2, "path": "/x.jsonl", "cwd": "/home/hunt"},
         {"tool": "kimi", "id": "id-3", "ts": 1, "dir": "/y"},
     ]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: fake_candidates)
     monkeypatch.setattr(sessions, "claude_snippet", lambda path: "irrelevant chat")
     monkeypatch.setattr(sessions, "kimi_snippet", lambda d: "irrelevant chat")
 
@@ -186,7 +255,7 @@ def test_cmd_search_passes_the_judges_reasons_and_full_only_when_asked(monkeypat
     """Reasons are shown by default in a clipped column; `--why` asks for the
     whole line instead."""
     fake_candidates = [{"tool": "codex", "id": "id-1", "ts": 1, "title": "Rebuild the firmware"}]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: fake_candidates)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
     ))
@@ -217,7 +286,7 @@ def test_cmd_search_prints_the_matches_in_the_judges_own_order(monkeypatch):
         {"tool": "claude", "id": "id-new", "ts": 30, "title": "hello"},
         {"tool": "codex", "id": "id-old", "ts": 10, "title": "upgrade the firmware"},
     ]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: fake_candidates)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "/work/" + r["id"], r["title"],
     ))
@@ -243,7 +312,7 @@ def test_cmd_search_shows_only_the_top_of_a_long_hit_list(monkeypatch, capsys):
         {"tool": "claude", "id": f"id-{n}", "ts": n, "title": f"t{n}"}
         for n in range(search.SEMANTIC_ROWS_SHOWN + 3)
     ]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: fake_candidates)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "/work", r["title"],
     ))
@@ -274,7 +343,7 @@ def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys
         {"tool": "codex", "id": "id-approval", "ts": 2, "title": "codex approval review"},
         {"tool": "codex", "id": "id-real", "ts": 1, "title": "Find isnfcon"},
     ]
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: fake_candidates)
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: fake_candidates)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
     ))
@@ -302,7 +371,7 @@ def test_cmd_search_omits_sessions_a_tool_started_for_itself(monkeypatch, capsys
 def test_cmd_search_kimi_still_uses_argv(monkeypatch):
     """kimi -p requires an argument and does not read stdin, so it must keep
     receiving the prompt as the last argv element."""
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -328,7 +397,7 @@ def test_cmd_search_kimi_still_uses_argv(monkeypatch):
 
 
 def test_cmd_search_uses_requested_judge_tool(monkeypatch):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -351,7 +420,7 @@ def test_cmd_search_uses_requested_judge_tool(monkeypatch):
 
 
 def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -387,7 +456,7 @@ def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
     batches with a 401 and never tried codex/kimi, because only a session
     limit or a timeout triggered the fallback. It makes claude just as
     unusable for the run, so it should fall through the same way."""
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -418,7 +487,7 @@ def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
 
 
 def test_cmd_search_explicit_claude_auth_failure_shows_login_hint(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -441,7 +510,7 @@ def test_cmd_search_explicit_claude_auth_failure_shows_login_hint(monkeypatch, c
 
 
 def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -470,7 +539,7 @@ def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
 
 
 def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -493,7 +562,7 @@ def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys
 
 
 def test_cmd_search_missing_judge_binary_reports_cleanly(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
@@ -512,7 +581,7 @@ def test_cmd_search_missing_judge_binary_reports_cleanly(monkeypatch, capsys):
 
 
 def test_cmd_search_no_candidates(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [])
 
     search.cmd_search(["topic"])
 
@@ -541,7 +610,7 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch, capsys):
     found) -- a 'lost in a long list' recall failure. Candidates must be
     split into CHUNK_SIZE-sized batches, each judged independently."""
     n = search.CHUNK_SIZE * 2 + 30  # 3 chunks: 100, 100, 30
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
     seen_sizes = []
@@ -569,7 +638,7 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch, capsys):
 
 def test_first_batch_selects_judge_for_remaining_batches(monkeypatch):
     n = search.CHUNK_SIZE * 2 + 30
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
     calls = []
@@ -603,7 +672,7 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
     chunks must map back to the correct global candidate, not collide with
     chunk 1's numbering."""
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     rendered = _stub_resolve_and_render(monkeypatch)
     monkeypatch.setattr(search, "snippet_for", lambda r: "")
 
@@ -632,7 +701,7 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
 
 def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys):
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     rendered = _stub_resolve_and_render(monkeypatch)
     monkeypatch.setattr(search, "snippet_for", lambda r: "")
 
@@ -664,7 +733,7 @@ def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys
 
 def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch, capsys):
     n = search.CHUNK_SIZE + 5
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(n))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
     class Fail:
@@ -684,7 +753,7 @@ def test_cmd_search_single_small_batch_no_batch_label(monkeypatch, capsys):
     """With <= CHUNK_SIZE candidates there's only one chunk -- the status
     line shouldn't talk about "batch 1/1", matching the pre-chunking
     output format for the common case."""
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: _fake_candidates(3))
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(3))
     _stub_resolve_and_render(monkeypatch)
 
     class FakeResult:
@@ -738,7 +807,7 @@ class _NoneResult:
 def test_cmd_search_shows_exact_matches_in_own_section(monkeypatch, capsys, tmp_path):
     exact = _candidate_with_term(tmp_path, "claude", "hit-1", "grabbed it via ARIA2C")
     other = {"tool": "codex", "id": "miss-1", "ts": 2, "title": "unrelated"}
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact, other])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [exact, other])
     monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], r.get("cwd", "?"), r.get("title", "(no title)"),
@@ -760,7 +829,7 @@ def test_cmd_search_shows_exact_matches_in_own_section(monkeypatch, capsys, tmp_
 
 def test_cmd_search_dedupes_judge_pick_already_exact(monkeypatch, capsys, tmp_path):
     exact = _candidate_with_term(tmp_path, "kimi", "hit-1", "aria2c -x8")
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [exact])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
     ))
@@ -784,7 +853,7 @@ def test_cmd_search_dedupes_judge_pick_already_exact(monkeypatch, capsys, tmp_pa
 def test_cmd_search_shows_both_sections_and_unioned_cache(monkeypatch, capsys, tmp_path):
     exact = _candidate_with_term(tmp_path, "claude", "hit-1", "aria2c here")
     semantic_only = {"tool": "codex", "id": "sem-1", "ts": 2, "title": "talks about resumable downloads"}
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact, semantic_only])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [exact, semantic_only])
     monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
@@ -816,7 +885,7 @@ def test_cmd_search_excludes_review_sessions_with_copied_history(monkeypatch, ca
     # see codex_rollout_title's CODEX_APPROVAL_PROMPT_PREFIX handling.
     review["title"] = "codex approval review"
     genuine = _candidate_with_term(tmp_path, "claude", "genuine", "CRA work")
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [review, genuine])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [review, genuine])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "actual work"),
     ))
@@ -833,7 +902,7 @@ def test_cmd_search_excludes_review_sessions_with_copied_history(monkeypatch, ca
 
 def test_cmd_search_judge_failure_still_shows_exact(monkeypatch, capsys, tmp_path):
     exact = _candidate_with_term(tmp_path, "claude", "hit-1", "aria2c")
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [exact])
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [exact])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
     ))
@@ -853,8 +922,50 @@ def test_cmd_search_judge_failure_still_shows_exact(monkeypatch, capsys, tmp_pat
     assert [row[1] for row in rendered[0][0]] == ["hit-1"]
 
 
+def _make_kimi_session(kimi_home, tmp_path, name, *, archived=False, text="aria2c mirror tuning"):
+    sess = tmp_path / name
+    (sess / "agents" / "main").mkdir(parents=True)
+    (sess / "agents" / "main" / "wire.jsonl").write_text(json.dumps(
+        {"type": "turn.prompt",
+         "input": [{"type": "text", "text": text}]}) + "\n")
+    (sess / "state.json").write_text(json.dumps(
+        {"updatedAt": 1755161559000, "cwd": "/work/aria2c",
+         **({"archived": True} if archived else {})}))
+    with open(kimi_home / "session_index.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"sessionId": f"session_{name}", "sessionDir": str(sess)}) + "\n")
+
+
+def test_cmd_search_all_reaches_archived_kimi_sessions(monkeypatch, tmp_path, capsys):
+    """End to end: an archived session is invisible to `ai search` by
+    default, and `--all` is what makes it findable -- the same contract
+    `ai sessions --all` has. The flag used to be parsed and then dropped on
+    the way to the candidate list."""
+    kimi_home = tmp_path / ".kimi-code"
+    kimi_home.mkdir()
+    monkeypatch.setattr(sessions, "KIMI_HOME", str(kimi_home))
+    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / "no-codex"))
+    # no judge call: let every candidate be a literal match
+    monkeypatch.setattr(sessions, "literal_matches", lambda cands, topic: list(cands))
+    monkeypatch.setattr(search, "run_judge_with_fallback",
+                        lambda prompt, n, judge, judge_explicit, label: ({}, judge))
+
+    _make_kimi_session(kimi_home, tmp_path, "live")
+    _make_kimi_session(kimi_home, tmp_path, "archived", archived=True)
+
+    search.cmd_search(["aria2c", "--tool", "kimi"])
+    out = capsys.readouterr().out
+    assert "session_live" in out
+    assert "session_arch" not in out
+
+    search.cmd_search(["aria2c", "--tool", "kimi", "--all"])
+    out = capsys.readouterr().out
+    assert "session_live" in out
+    assert "session_arch" in out
+
+
 def test_cmd_search_no_matches_at_all(monkeypatch, capsys):
-    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter: [
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "codex_rollout_path", lambda sid: None)

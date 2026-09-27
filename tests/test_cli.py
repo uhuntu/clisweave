@@ -29,8 +29,21 @@ def test_codex_yolo_maps_to_approve_for_me():
 
 
 def test_kimi_all_flags():
-    cmd = build_command("kimi", ["-p", "-c", "-m", "kimi-for-coding", "-y"])
-    assert cmd == ["kimi", "-p", "-c", "-m", "kimi-for-coding", "-y"]
+    cmd = build_command("kimi", ["-p", "-c", "-m", "kimi-for-coding", "-y", "fix the flaky test"])
+    assert cmd == ["kimi", "-p", "-c", "-m", "kimi-for-coding", "-y", "fix the flaky test"]
+
+
+def test_kimi_print_without_a_prompt_is_a_usage_error():
+    """kimi's -p does not read stdin (unlike claude's and codex's), so a bare
+    `-p` can only be a mistake."""
+    with pytest.raises(UsageError):
+        build_command("kimi", ["-p", "-c"])
+
+
+def test_claude_print_without_a_prompt_is_allowed():
+    """claude's -p reads the prompt from stdin, so a bare `-p` is a real
+    invocation there and must keep working."""
+    assert build_command("claude", ["-p"]) == ["claude", "-p"]
 
 
 def test_multiple_add_dirs_repeat_flag():

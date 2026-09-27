@@ -27,18 +27,37 @@ HANDOFF_DIR = os.path.join(HOME, ".cache", "clisweave", "handoffs")
 
 
 def write_list_cache(entries):
-    """entries: list of {"tool": ..., "id": ...} in printed order."""
+    """entries: list of {"tool": ..., "id": ...} in printed order.
+
+    Written through a temp file and os.replace: `open(path, "w")` truncates
+    the existing cache before writing it, so an interrupted listing (or two
+    concurrent `ai sessions` runs) left a half-written file that read back as
+    an empty list -- after which `ai resume 3` reported "no session list
+    cached yet" for a cache that plainly existed. os.replace is atomic on
+    both POSIX and Windows, so a reader sees either the whole old file or
+    the whole new one."""
     try:
         os.makedirs(os.path.dirname(LIST_CACHE_FILE), exist_ok=True)
-        with open(LIST_CACHE_FILE, "w", encoding="utf-8") as fh:
+        tmp = f"{LIST_CACHE_FILE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(entries, fh)
+        os.replace(tmp, LIST_CACHE_FILE)
     except OSError:
         pass  # best-effort -- resume-by-number just won't work this time
 
 
 def read_list_cache():
     entries = read_json(LIST_CACHE_FILE)
-    return entries if isinstance(entries, list) else []
+    if not isinstance(entries, list):
+        return []
+    # A half-written or hand-edited cache is not distinguishable from a
+    # missing one any other way, and the resume paths index straight into
+    # these entries: [{"tool": "claude"}] used to surface as a KeyError
+    # traceback instead of the "run `ai sessions` first" message that the
+    # empty case already gives.
+    return [e for e in entries
+            if isinstance(e, dict) and isinstance(e.get("tool"), str)
+            and isinstance(e.get("id"), str)]
 
 
 def exec_or_die(argv):
@@ -71,9 +90,72 @@ def read_json(path):
         return None
 
 
+def open_text(path):
+    """Open a transcript for reading, tolerating the non-UTF-8 bytes the CLIs
+    leave behind: a partially flushed multi-byte character (they write these
+    files while running, so a line can be cut mid-character), or a pasted
+    blob of binary in a message.  Strict UTF-8 raises UnicodeDecodeError half
+    a file in, and one such byte in one session file took down `ai`,
+    `ai sessions`, `ai search`, `ai resume` and every handoff at once, with
+    no way to find the file (you cannot list to look for it).  Substituting
+    U+FFFD keeps the row readable instead."""
+    return open(path, encoding="utf-8", errors="replace")
+
+
+def dict_field(obj, key):
+    """The value of `key` when it is a dict, else {}.
+
+    A record whose field is an explicit JSON null is ordinary in these
+    files, and `d.get(key, {})` does not cover it: the default only applies
+    when the key is absent, so for "message": null it returns None and the
+    caller's own .get runs on None -- an AttributeError that took down the
+    whole listing over one odd record.  Guarding once, here, is also what
+    keeps a wrong-typed field (a list where a message should be) from
+    reaching the title, snippet and handoff readers."""
+    value = obj.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def list_field(obj, key):
+    """The value of `key` when it is a list, else [] -- see dict_field for
+    why the `or []` idiom is not enough on its own."""
+    value = obj.get(key)
+    return value if isinstance(value, list) else []
+
+
+def block_text(block):
+    """The text of a typed content block, or "" when it isn't usable text.
+
+    A block's `text` is not guaranteed to be a string: a malformed or
+    future-shaped block carries null or a list.  Every caller feeds the
+    result straight into string operations (lstrip, join, strip), so one
+    non-string block was enough to turn "list the block's text" into an
+    AttributeError inside the title/snippet/handoff readers."""
+    text = block.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _as_title(value):
+    """A stored title (claude's customTitle/aiTitle) normalized the way every
+    other title is -- whitespace flattened, length-capped -- or None when it
+    isn't a string at all.  Titles are printed straight into a column, so an
+    unstripped newline in one breaks the row, and a non-string value would
+    reach string operations as-is."""
+    if not isinstance(value, str):
+        return None
+    return " ".join(value.split())[:70]
+
+
 def read_jsonl(path):
+    """Yield each parseable JSON record of a .jsonl transcript.
+
+    A transcript belongs to a tool that is still writing it, so an
+    unparseable line is normal rather than fatal -- mid-write flushes, a
+    binary paste, a truncated tail.  Such lines are skipped.  OSError rather
+    than just FileNotFoundError: a permission error or a vanished directory
+    should end the walk quietly too, not abort the whole command."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open_text(path) as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -82,7 +164,7 @@ def read_jsonl(path):
                     yield json.loads(line)
                 except Exception:
                     continue
-    except FileNotFoundError:
+    except OSError:
         return
 
 
@@ -96,6 +178,12 @@ def decode_project_dir_name(proj_dir):
     at least keeps the guess a normal-looking path --
     "-home-hunt--openclaw-workspace" decoded literally to
     "/home/hunt//openclaw/workspace", a double slash no real path has."""
+    if re.match(r"^[A-Za-z]--", proj_dir):
+        # A Windows path: claude keeps the colon in, so the drive letter comes
+        # back as "C--Users-hunt-work-proj" and a literal decode of that is
+        # not a path at all -- the row showed garbage, `--cwd` never matched
+        # it, and `ai resume` would not chdir there.
+        return proj_dir[0] + ":/" + re.sub(r"-+", "/", proj_dir[2:].lstrip("-"))
     if not proj_dir.startswith("-"):
         return proj_dir
     return re.sub(r"-+", "/", proj_dir)
@@ -109,7 +197,11 @@ def claude_light_records():
     by_id = {}
     if not os.path.isdir(CLAUDE_PROJECTS):
         return []
-    for proj_dir in os.listdir(CLAUDE_PROJECTS):
+    try:
+        proj_dirs = os.listdir(CLAUDE_PROJECTS)
+    except OSError:
+        return []  # unreadable store: no claude sessions, same as none stored
+    for proj_dir in proj_dirs:
         full_dir = os.path.join(CLAUDE_PROJECTS, proj_dir)
         if not os.path.isdir(full_dir):
             continue
@@ -135,7 +227,7 @@ def extract_text_from_content(content, text_types=("text",)):
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") in text_types:
-                return block.get("text")
+                return block_text(block)
     return None
 
 
@@ -221,7 +313,7 @@ def claude_snippet(path, max_messages=12, max_chars=800):
     had it at message 71, in the latter-middle stretch)."""
     texts = []
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open_text(path) as fh:
             for i, line in enumerate(fh):
                 if i > 20000:
                     break
@@ -232,10 +324,10 @@ def claude_snippet(path, max_messages=12, max_chars=800):
                 if d.get("type") not in ("user", "assistant"):
                     continue
                 text = unwrap_openclaw_ctx(
-                    extract_text_from_content(d.get("message", {}).get("content")) or "")
+                    extract_text_from_content(dict_field(d, "message").get("content")) or "")
                 if text.strip():
                     texts.append(text.strip().replace("\n", " "))
-    except FileNotFoundError:
+    except OSError:
         pass
     return join_with_fair_budget(sample_stride(texts, max_messages), max_chars)
 
@@ -494,17 +586,17 @@ def claude_title_and_cwd(path, cwd_fallback):
     custom_title = None
     ai_title = None
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open_text(path) as fh:
             for i, line in enumerate(fh):
                 if '"custom-title"' in line:
                     try:
-                        custom_title = json.loads(line).get("customTitle") or custom_title
+                        custom_title = _as_title(json.loads(line).get("customTitle")) or custom_title
                     except Exception:
                         pass
                     continue
                 if '"ai-title"' in line:
                     try:
-                        ai_title = json.loads(line).get("aiTitle") or ai_title
+                        ai_title = _as_title(json.loads(line).get("aiTitle")) or ai_title
                     except Exception:
                         pass
                     continue
@@ -514,11 +606,11 @@ def claude_title_and_cwd(path, cwd_fallback):
                     d = json.loads(line)
                 except Exception:
                     continue
-                if cwd is None and d.get("cwd"):
+                if cwd is None and isinstance(d.get("cwd"), str):
                     cwd = d["cwd"]
                 if d.get("type") != "user":
                     continue
-                text = extract_text_from_content(d.get("message", {}).get("content"))
+                text = extract_text_from_content(dict_field(d, "message").get("content"))
                 if not text:
                     continue
                 text = unwrap_openclaw_ctx(text)
@@ -535,15 +627,20 @@ def claude_title_and_cwd(path, cwd_fallback):
                 # line's prompt match and reject a real request.
                 if title is None and not _is_injected_or_pasted(text) and not is_trivial_title(stripped):
                     title = stripped[:70]
-    except FileNotFoundError:
+    except OSError:
         pass
+    # A stored title is flattened like every other title path: `render_rows`
+    # prints it straight into a column, so one embedded newline in a
+    # customTitle would break the row's layout.
+    custom_title = _as_title(custom_title)
+    ai_title = _as_title(ai_title)
     if custom_title and custom_title != "New session" and not is_seed_restatement(custom_title):
         resolved = custom_title
     elif ai_title and not is_seed_restatement(ai_title):
         resolved = ai_title
     else:
         resolved = _title_or_placeholder(title, fallback)
-    return resolved, (cwd or cwd_fallback)
+    return resolved, (cwd if isinstance(cwd, str) and cwd else cwd_fallback)
 
 
 def claude_session_cwd(sid):
@@ -586,11 +683,22 @@ def codex_thread_names():
             ts = calendar.timegm(time.strptime(updated[:19], "%Y-%m-%dT%H:%M:%S"))
         except Exception:
             ts = 0
-        if sid in ts_seen and ts_seen[sid] >= ts:
+        # The index is append-only, so the later line is the newer name even
+        # when updated_at is missing or unparseable (ts 0): keeping the first
+        # on a tie left a stale thread_name in place of codex's rename.
+        if sid in ts_seen and ts_seen[sid] > ts:
             continue
         ts_seen[sid] = ts
         names[sid] = entry.get("thread_name")
     return names
+
+
+# One read of a rollout per command, shared by every reader -- see
+# _codex_scan.  Keyed by (path, mtime, size) so a file rewritten underneath
+# is re-read rather than served stale.
+_codex_scan_cache = {}
+LITERAL_SCAN_CACHE_MAX = 4096
+LITERAL_SCAN_LIMIT_CODEX = 20000
 
 
 _codex_path_index = None
@@ -598,9 +706,19 @@ _codex_path_index = None
 
 def codex_rollout_files():
     """Every rollout file under CODEX_HOME. Order is the filesystem's, not
-    recency -- callers must not depend on it (see build_codex_path_index)."""
-    sessions_dir = os.path.join(CODEX_HOME, "sessions")
-    return glob.glob(os.path.join(sessions_dir, "**", "*.jsonl"), recursive=True)
+    recency -- callers must not depend on it (see build_codex_path_index).
+
+    Walked with followlinks=False: `**` in a recursive glob follows symlinked
+    directories, and a `sessions/current -> .` symlink (which people do add)
+    made glob return every file once per nesting level -- 64 copies of each
+    rollout for a two-level loop, a multi-second listing, and on a filesystem
+    with no depth limit a RecursionError."""
+    found = []
+    for root, _dirs, files in os.walk(os.path.join(CODEX_HOME, "sessions"), followlinks=False):
+        for name in files:
+            if name.endswith(".jsonl"):
+                found.append(os.path.join(root, name))
+    return found
 
 
 def build_codex_path_index():
@@ -621,7 +739,15 @@ def build_codex_path_index():
         prev = index.get(sid)
         if prev is not None:
             try:
-                if os.path.getmtime(path) <= os.path.getmtime(prev):
+                # mtime first, then the filename: codex stamps the resume time
+                # into it (rollout-<time>-<id>.jsonl), so it breaks an mtime
+                # tie the same way the clock would have. Equal mtimes are
+                # ordinary on a 1-second-granularity filesystem and after a
+                # cp -p / rsync / cloud-sync restore, and `<=` alone let the
+                # stale file win -- pointing every reader back at the thread
+                # as it stood before its last resume.
+                if (os.path.getmtime(path), os.path.basename(path)) <= (
+                        os.path.getmtime(prev), os.path.basename(prev)):
                     continue
             except OSError:
                 continue
@@ -653,7 +779,10 @@ def codex_light_records():
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        records.append({"tool": "codex", "id": sid, "ts": mtime, "title": thread_names.get(sid)})
+        meta = _codex_session_meta(path)
+        records.append({"tool": "codex", "id": sid, "ts": mtime,
+                        "title": thread_names.get(sid),
+                        "cwd": dict_field(meta, "payload").get("cwd") if meta else None})
     return records
 
 
@@ -737,32 +866,44 @@ def _codex_tool_call_text(payload):
     return ""
 
 
-def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=20000,
-                            include_tool_calls=False, skip_boilerplate=True, sample=True):
-    """Shared scan for codex_rollout_title/codex_rollout_snippet: genuine
-    message texts from a rollout file for the given roles, skipping
-    injected boilerplate (AGENTS.md instructions, permission setup,
-    environment context) by its distinctive prefix rather than by length --
-    a length cutoff also filters out legitimate long, detailed task
-    requests (a real session had a 1304-char genuine message wrongly
-    treated as boilerplate and skipped entirely, leaving both `ai search`
-    and the plain listing with no way to find or label that session).
-    Sampled evenly across the whole conversation via sample_stride, not
-    just the first max_messages -- see its docstring. Pass sample=False for
-    callers that want literally the earliest messages, in order (e.g. title
-    extraction, which wants to look past a trivial first reply without
-    jumping elsewhere in the conversation).
+def _codex_scan(path, limit=LITERAL_SCAN_LIMIT_CODEX):
+    """One read of a rollout, shared by every question asked of it.
 
-    scan_limit caps how many rollout lines are read; rollouts grow very
-    long in agentic sessions (a real one ran to 4700+ lines), and a topic
-    can first appear in the last stretch. The cap only guards against
-    runaway files, so it is generous -- 2000 demonstrably truncated real
-    sessions and lost matches."""
-    texts = []
+    Returns a list, in file order, of
+
+        ("message", role, text, is_boilerplate)
+        ("tool", command)
+
+    A single `ai search` asks the same rollout four things -- its title, its
+    snippet, its cwd and, for a handoff or a fork, its parent thread -- and
+    each of those used to read and json-parse the file again from scratch. On
+    the 220MB of rollouts one machine accumulates that is three full passes
+    over the corpus per search, most of what the command costs. Reading once
+    and filtering here is the same work, minus the repeats.
+
+    Boilerplate is *flagged* rather than dropped, because the two readers want
+    opposite things from it: the title and snippet skip it, while the seed
+    fallback that names a session a tool started for itself has to see it.
+
+    Kept per (path, mtime, size) so a file rewritten underneath -- a resumed
+    thread appends a new rollout, a test rewrites the same path -- is re-read
+    rather than served stale. Entries are the extracted texts, not the parsed
+    JSON, so a cache holds kilobytes per session rather than the megabytes of
+    rollout it came from."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    cached = _codex_scan_cache.get(key)
+    if cached is not None:
+        return cached
+
+    entries = []
+    try:
+        with open_text(path) as fh:
             for i, line in enumerate(fh):
-                if i > scan_limit:
+                if i > limit:
                     break
                 try:
                     d = json.loads(line)
@@ -770,21 +911,21 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                     continue
                 if d.get("type") != "response_item":
                     continue
-                payload = d.get("payload", {})
+                payload = dict_field(d, "payload")
                 if payload.get("type") in ("function_call", "custom_tool_call"):
                     # Shell commands the agent ran: often the ONLY place a
                     # term appears (a real session mentioned the searched
                     # tool exclusively inside exec_command calls). Extract
                     # the command when the input carries one, else keep the
                     # raw call text.
-                    if include_tool_calls:
-                        text = _codex_tool_call_text(payload)
-                        if text:
-                            texts.append(text.replace("\n", " "))
+                    text = _codex_tool_call_text(payload).replace("\n", " ")
+                    if text:
+                        entries.append(("tool", text))
                     continue
-                if payload.get("type") != "message" or payload.get("role") not in roles:
+                if payload.get("type") != "message":
                     continue
-                text = extract_text_from_content(payload.get("content"), text_types=("input_text", "text", "output_text"))
+                text = extract_text_from_content(
+                    payload.get("content"), text_types=("input_text", "text", "output_text"))
                 if not text:
                     continue
                 text = unwrap_openclaw_ctx(text)
@@ -810,13 +951,42 @@ def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=2000
                     trailing = stripped[marker + len(MY_REQUEST_MARKER):].strip()
                     if trailing:
                         stripped = trailing
-                if skip_boilerplate and stripped.startswith(CODEX_BOILERPLATE_PREFIXES):
-                    continue
-                texts.append(stripped.replace("\n", " "))
-    except FileNotFoundError:
+                entries.append(("message", payload.get("role"), stripped.replace("\n", " "),
+                                stripped.startswith(CODEX_BOILERPLATE_PREFIXES)))
+    except OSError:
         pass
-    return sample_stride(texts, max_messages) if sample else texts[:max_messages]
+    if len(_codex_scan_cache) >= LITERAL_SCAN_CACHE_MAX:
+        _codex_scan_cache.clear()  # bounded: hold one invocation's worth, no more
+    _codex_scan_cache[key] = entries
+    return entries
 
+
+def _codex_genuine_messages(path, max_messages, roles=("user",), scan_limit=20000,
+                            include_tool_calls=False, skip_boilerplate=True, sample=True):
+    """Genuine message texts from a rollout for the given roles, skipping
+    injected boilerplate (AGENTS.md instructions, permission setup,
+    environment context) by its distinctive prefix rather than by length --
+    a length cutoff also filters out legitimate long, detailed task
+    requests (a real session had a 1304-char genuine message wrongly
+    treated as boilerplate and skipped entirely, leaving both `ai search`
+    and the plain listing with no way to find or label that session).
+    Sampled evenly across the whole conversation via sample_stride, not
+    just the first max_messages -- see its docstring. Pass sample=False for
+    callers that want literally the earliest messages, in order (e.g. title
+    extraction, which wants to look past a trivial first reply without
+    jumping elsewhere in the conversation).
+
+    A filter over _codex_scan, which is read once and shared."""
+    texts = []
+    for entry in _codex_scan(path, scan_limit):
+        if entry[0] == "tool":
+            if include_tool_calls:
+                texts.append(entry[1])
+        elif entry[1] in roles:
+            if skip_boilerplate and entry[3]:
+                continue
+            texts.append(entry[2])
+    return sample_stride(texts, max_messages) if sample else texts[:max_messages]
 
 def codex_rollout_title(sid):
     """Fallback title for sessions with no session_index.jsonl entry: the
@@ -864,15 +1034,34 @@ def codex_rollout_snippet(sid, max_messages=12, max_chars=800):
     return join_with_fair_budget(texts, max_chars)
 
 
+# How far into a rollout to look for its session_meta. It is the first line
+# codex writes, but a file read while codex is still writing it (or one
+# restored by a copy that dropped bytes) can open with an unparseable record,
+# so the scan has to be able to step past one.
+CODEX_META_SCAN_LIMIT = 50
+
+
+def _codex_session_meta(path):
+    """A rollout's session_meta record, or None.
+
+    Scans forward instead of stopping at the first record that parses: a
+    truncated leading line used to make this return None even though the real
+    session_meta sat two records later, which cost the session its cwd (no
+    chdir on resume) and a fork its `(fork) ...` title."""
+    for i, d in enumerate(read_jsonl(path)):
+        if i >= CODEX_META_SCAN_LIMIT:
+            break
+        if isinstance(d, dict) and d.get("type") == "session_meta":
+            return d
+    return None
+
+
 def codex_cwd(sid):
     path = codex_rollout_path(sid)
     if not path:
         return None
-    for d in read_jsonl(path):
-        if d.get("type") == "session_meta":
-            return d.get("payload", {}).get("cwd")
-        break
-    return None
+    meta = _codex_session_meta(path)
+    return dict_field(meta, "payload").get("cwd") if meta else None
 
 
 def codex_parent_thread_id(sid):
@@ -884,12 +1073,11 @@ def codex_parent_thread_id(sid):
     path = codex_rollout_path(sid)
     if not path:
         return None
-    for d in read_jsonl(path):
-        if d.get("type") == "session_meta":
-            parent = (d.get("payload") or {}).get("parent_thread_id")
-            return parent if parent and parent != sid else None
-        break
-    return None
+    meta = _codex_session_meta(path)
+    if not meta:
+        return None
+    parent = dict_field(meta, "payload").get("parent_thread_id")
+    return parent if parent and parent != sid else None
 
 
 def codex_resolve(prefix):
@@ -906,16 +1094,29 @@ def kimi_index():
 
 
 def parse_kimi_timestamp(value):
-    """kimi-code's state.json has used two schemas over time: epoch
+    """kimi-code's state.json has used several schemas over time: epoch
     milliseconds (numeric, current) and ISO-8601 strings (older sessions,
     e.g. "2026-07-20T01:49:19.177Z"). Handle both; returns seconds since
-    epoch, or 0 if missing/unparseable."""
-    if not value:
+    epoch, or 0 if missing/unparseable.
+
+    A number is read as milliseconds only when it is large enough to be some:
+    epoch *seconds* (1755161559) is a value these files have carried too, and
+    dividing it by 1000 lands in January 1970 -- which sorted the session to
+    the bottom of every listing and rendered it as "20833d ago"."""
+    if not value or isinstance(value, bool):
         return 0
-    try:
-        return float(value) / 1000.0
-    except (TypeError, ValueError):
-        pass
+    number = None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        try:
+            number = float(str(value).strip())
+        except ValueError:
+            number = None
+    if number is not None:
+        if abs(number) < 1e11:
+            number *= 1000.0
+        return number / 1000.0
     try:
         return calendar.timegm(time.strptime(str(value)[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
@@ -979,7 +1180,7 @@ def kimi_title(sdir):
     fallback = None
     title = None
     try:
-        with open(wire, encoding="utf-8") as fh:
+        with open_text(wire) as fh:
             for i, line in enumerate(fh):
                 if i > TITLE_SCAN_LINES or title:
                     break
@@ -989,10 +1190,10 @@ def kimi_title(sdir):
                     continue
                 if d.get("type") != "turn.prompt":
                     continue
-                for block in d.get("input", []):
+                for block in list_field(d, "input"):
                     if not (isinstance(block, dict) and block.get("type") == "text"):
                         continue
-                    raw = unwrap_openclaw_ctx(block.get("text", ""))
+                    raw = unwrap_openclaw_ctx(block_text(block))
                     stripped = " ".join(raw.split())
                     if not stripped:
                         continue
@@ -1003,7 +1204,7 @@ def kimi_title(sdir):
                     if title is None and not _is_injected_or_pasted(raw) and not is_trivial_title(stripped):
                         title = stripped[:70]
                     break
-    except FileNotFoundError:
+    except OSError:
         pass
     resolved = _title_or_placeholder(title, fallback)
     if resolved == "(no title)":
@@ -1035,7 +1236,7 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
     wire = os.path.join(sdir, "agents", "main", "wire.jsonl")
     texts = []
     try:
-        with open(wire, encoding="utf-8") as fh:
+        with open_text(wire) as fh:
             for i, line in enumerate(fh):
                 if i > 20000:
                     break
@@ -1045,18 +1246,19 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
                     continue
                 blocks = None
                 if d.get("type") == "turn.prompt":
-                    blocks = d.get("input", [])
+                    blocks = list_field(d, "input")
                 elif d.get("type") == "context.append_loop_event":
-                    event = d.get("event", {})
+                    event = dict_field(d, "event")
                     if event.get("type") == "content.part":
-                        part = event.get("part", {})
+                        part = dict_field(event, "part")
                         if part.get("type") in ("text", "think"):
-                            t = (part.get("text") or part.get("think") or "").strip()
+                            t = next((v for v in (part.get("text"), part.get("think"))
+                                      if isinstance(v, str)), "").strip()
                             if t:
                                 texts.append(t.replace("\n", " "))
                             continue
                     elif event.get("type") == "tool.result":
-                        result = event.get("result") or {}
+                        result = dict_field(event, "result")
                         output = result.get("output")
                         if isinstance(output, str) and output.strip():
                             texts.append(output.strip().replace("\n", " ")[:400])
@@ -1065,11 +1267,11 @@ def kimi_snippet(sdir, max_messages=12, max_chars=800):
                     continue
                 for block in blocks:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        t = unwrap_openclaw_ctx(block.get("text", "")).strip().replace("\n", " ")
+                        t = unwrap_openclaw_ctx(block_text(block)).strip().replace("\n", " ")
                         if t:
                             texts.append(t)
                         break
-    except FileNotFoundError:
+    except OSError:
         pass
     return join_with_fair_budget(sample_stride(texts, max_messages), max_chars)
 
@@ -1102,15 +1304,17 @@ def _literal_pattern(topic):
 
 def _literal_texts(tool, entry):
     """Search conversation content, excluding metadata and injected context."""
-    kind = entry.get("type")
+    kind = entry.get("type") if isinstance(entry, dict) else None
     if tool == "claude" and kind in ("user", "assistant"):
-        content = entry.get("message", {}).get("content")
+        content = dict_field(entry, "message").get("content")
         if isinstance(content, str):
             return [content]
-        return [block.get("text", "") for block in content or []
+        if not isinstance(content, list):
+            return []
+        return [block_text(block) for block in content
                 if isinstance(block, dict) and block.get("type") in ("text", "thinking")]
     if tool == "codex" and kind == "response_item":
-        payload = entry.get("payload", {})
+        payload = dict_field(entry, "payload")
         ptype = payload.get("type")
         if ptype == "message" and payload.get("role") in ("user", "assistant"):
             texts = _all_text_blocks(payload.get("content"), ("input_text", "text", "output_text"))
@@ -1121,28 +1325,114 @@ def _literal_texts(tool, entry):
             return [payload.get("output", "")]
     if tool == "kimi":
         if kind == "turn.prompt":
-            return _all_text_blocks(entry.get("input"))
+            return _all_text_blocks(list_field(entry, "input"))
         if kind == "context.append_loop_event":
-            event = entry.get("event", {})
+            event = dict_field(entry, "event")
             if event.get("type") == "content.part":
-                part = event.get("part", {})
-                return [part.get("text") or part.get("think") or ""]
+                part = dict_field(event, "part")
+                text = next((v for v in (part.get("text"), part.get("think"))
+                             if isinstance(v, str)), "")
+                return [text]
             if event.get("type") == "tool.result":
-                return [event.get("result", {}).get("output", "")]
+                output = dict_field(event, "result").get("output", "")
+                return [output if isinstance(output, str) else ""]
     return []
 
 
-def _file_contains(path, pattern, tool=None):
+LITERAL_SCAN_LIMIT = 20000
+
+# The only two characters in all of Unicode whose lowercase contains an ASCII
+# letter (enumerated over the whole range, not guessed): U+0130 LATIN CAPITAL
+# LETTER I WITH DOT ABOVE and U+212A KELVIN SIGN. A line holding one of them
+# can match an ASCII topic -- "k" against a Kelvin sign -- without the topic's
+# bytes appearing anywhere in the line, so a cut taken on raw bytes has to let
+# that line through to be decoded and judged by the real pattern instead.
+#
+# Both spellings count: raw UTF-8, and the escaped code point these files use
+# for non-ASCII -- which is how a folding character most often appears, and
+# which hides it from a test taken on the raw bytes.
+CASE_FOLDING_UTF8 = (bytes.fromhex("c4b0"), bytes.fromhex("e284aa"))
+CASE_FOLDING_ESCAPED = (bytes.fromhex("5c7532313261"), bytes.fromhex("5c75313330"))
+
+
+def _holds_case_folder(buf):
+    """True if `buf` holds a character whose lowercase is an ASCII letter, in
+    either spelling. Four plain byte sequences tested with `in` rather than one
+    regex: an alternation over a megabyte of dense CJK costs more than twice
+    as much."""
+    return (any(seq in buf for seq in CASE_FOLDING_UTF8)
+            or any(seq in buf for seq in CASE_FOLDING_ESCAPED))
+
+
+def _bytes_needle(topic):
+    """The topic as a lowercased ASCII byte string, or None for a non-ASCII
+    one -- see _file_contains for what a cut on raw bytes has to watch out
+    for."""
+    return topic.lower().encode("utf-8") if topic.isascii() else None
+
+
+NEWLINE = 10
+
+
+def _scan_lines(fh, chunk_size=1 << 20):
+    """Yield (raw_line, cut_is_safe) for a binary transcript, undecoded.
+
+    Splitting on b"\n" and decoding per line rather than decoding the whole
+    file: a UTF-8 multi-byte sequence never contains 0x0A (continuation bytes
+    are 0x80-0xBF and lead bytes 0xC0 and up), so no character straddles the
+    boundary and the two orders agree.
+
+    cut_is_safe is False for any chunk holding a case folder: those lines are
+    decoded and parsed rather than cut."""
+    carry = b""
+    while True:
+        chunk = fh.read(chunk_size)
+        if not chunk:
+            break
+        buf = carry + chunk
+        safe = not _holds_case_folder(buf)
+        lines = buf.split(bytes((NEWLINE,)))
+        carry = lines.pop()  # the trailing piece is not a complete line yet
+        for line in lines:
+            yield line, safe
+    if carry:
+        yield carry, not _holds_case_folder(carry)
+
+
+def _file_contains(path, pattern, tool=None, needle=None, limit=LITERAL_SCAN_LIMIT):
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if tool is None:  # kimi background task output.log
-                    texts = [line]
-                else:
-                    try:
-                        texts = _literal_texts(tool, json.loads(line))
-                    except (ValueError, TypeError, AttributeError):
+        with open(path, "rb") as fh:
+            for i, (raw, safe) in enumerate(_scan_lines(fh)):
+                if i > limit:
+                    break
+                if needle is not None and safe:
+                    # An ASCII topic is literal in the line whether or not the
+                    # rest of it is JSON-escaped, and a safe line cannot hold a
+                    # case variant the cut would miss, so its bytes answer the
+                    # question -- at roughly a third of the cost of decoding.
+                    if needle not in raw.lower():
                         continue
+                # Everything else is parsed rather than cut. A non-ASCII
+                # topic, because these files write non-ASCII as escaped code
+                # points, so the topic is then not a substring of the raw line
+                # even when the line is entirely about it. And an unsafe line,
+                # because there the topic can match through a case fold
+                # without appearing in the line at all, so no test taken on
+                # the line -- bytes or decoded -- can answer.
+                if tool is None:  # kimi background task output.log
+                    texts = [raw.decode("utf-8", "replace")]
+                else:
+                    # A mid-write or otherwise unparseable line is skipped, as
+                    # everywhere else that reads these files.  That is the only
+                    # failure mode left to swallow here: _literal_texts is
+                    # type-guarded, so an exception from it would be a real bug
+                    # rather than dirty data -- and swallowing real bugs is how
+                    # a session silently vanished from search results.
+                    try:
+                        entry = json.loads(raw)
+                    except (ValueError, RecursionError):
+                        continue
+                    texts = _literal_texts(tool, entry)
                 if any(isinstance(t, str) and pattern.search(t) for t in texts):
                     return True
     except OSError:
@@ -1157,9 +1447,12 @@ def literal_matches(candidates, topic):
     topics match whole words; other topics retain substring matching.
     """
     pattern = _literal_pattern(topic)
+    needle = _bytes_needle(topic)
     hits = []
     for record in candidates:
-        if any(_file_contains(path, pattern, record["tool"] if path.endswith(".jsonl") else None)
+        if any(_file_contains(path, pattern,
+                              record["tool"] if path.endswith(".jsonl") else None,
+                              needle=needle)
                for path in session_literal_scan_files(record)):
             hits.append(record)
     return hits
@@ -1211,8 +1504,9 @@ def _all_text_blocks(content, text_types=("text",)):
     if not isinstance(content, list):
         return []
     return [
-        block.get("text", "") for block in content
-        if isinstance(block, dict) and block.get("type") in text_types and block.get("text", "").strip()
+        block_text(block) for block in content
+        if isinstance(block, dict) and block.get("type") in text_types
+        and block_text(block).strip()
     ]
 
 
@@ -1222,7 +1516,7 @@ def claude_handoff_messages(path):
         role = d.get("type")
         if role not in ("user", "assistant"):
             continue
-        texts = _all_text_blocks(d.get("message", {}).get("content"))
+        texts = _all_text_blocks(dict_field(d, "message").get("content"))
         if texts:
             messages.append((role, "\n\n".join(texts)))
     return messages
@@ -1233,7 +1527,7 @@ def codex_handoff_messages(path):
     for d in read_jsonl(path):
         if d.get("type") != "response_item":
             continue
-        payload = d.get("payload", {})
+        payload = dict_field(d, "payload")
         role = payload.get("role")
         if payload.get("type") != "message" or role not in ("user", "assistant"):
             continue
@@ -1249,10 +1543,10 @@ def kimi_handoff_messages(sdir):
     messages = []
     for d in read_jsonl(wire):
         if d.get("type") == "turn.prompt":
-            texts = _all_text_blocks(d.get("input", []))
+            texts = _all_text_blocks(list_field(d, "input"))
             role = "user"
-        elif d.get("type") == "context.append_loop_event" and d.get("event", {}).get("type") == "content.part":
-            texts = _all_text_blocks([d["event"].get("part", {})])
+        elif d.get("type") == "context.append_loop_event" and dict_field(d, "event").get("type") == "content.part":
+            texts = _all_text_blocks([dict_field(dict_field(d, "event"), "part")])
             role = "assistant"
         else:
             continue
@@ -1268,7 +1562,36 @@ def kimi_handoff_messages(sdir):
 KIMI_RESUME_HINT_RE = re.compile(r"To resume this session:\s*kimi\s+-(?:r|S)\s+(\S+)")
 
 
-def _run_kimi_seed(extra, prompt):
+# Flags that don't belong on the interactive `kimi -S <id>` resume: -p/--print
+# runs once and exits (the continuation is meant to be a live session), and
+# -c/--continue contradicts naming an explicit session to resume. Each is
+# dropped together with the value it consumed.
+KIMI_NON_RESUME_FLAGS = ("-p", "--print", "-c", "--continue")
+KIMI_FLAGS_WITH_VALUES = ("-p", "--print")
+
+
+def _kimi_resume_flags(extra):
+    """The pass-through flags worth keeping on the interactive resume.
+
+    The one-shot seed run gets none of them. It exists only to persist a
+    session with the handoff prompt in its history, and splicing the user's
+    flags into `kimi [flags] -p <prompt>` produced `kimi -p -p <prompt>` --
+    a form kimi has no positional prompt for, so it parsed the whole prompt
+    as a subcommand name and the handoff died before it started."""
+    kept = []
+    i = 0
+    while i < len(extra):
+        a = extra[i]
+        if a in KIMI_NON_RESUME_FLAGS:
+            takes_value = a in KIMI_FLAGS_WITH_VALUES and i + 1 < len(extra)
+            i += 2 if takes_value else 1
+            continue
+        kept.append(a)
+        i += 1
+    return kept
+
+
+def _run_kimi_seed(prompt):
     """Run `kimi -p <seed>`, relaying output to the terminal as it arrives
     while capturing a copy to recover the persisted session id. Returns
     (exit status, session id or None).
@@ -1276,7 +1599,7 @@ def _run_kimi_seed(extra, prompt):
     kimi has no positional-prompt form (a bare prompt parses as a subcommand
     name) and -p does not read stdin, so this is its only seed mechanism;
     the interactive continuation happens afterwards via -S."""
-    argv = ["kimi", *extra, "-p", prompt]
+    argv = ["kimi", "-p", prompt]
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=None)
     except FileNotFoundError:
@@ -1329,6 +1652,7 @@ def write_handoff_export(tool, sid, transcript):
     path = os.path.abspath(os.path.join(HANDOFF_DIR, f"{tool}-{safe_id}.md"))
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(transcript)
+    prune_handoff_exports()
     return path
 
 
@@ -1382,7 +1706,7 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
               "`kimi -p` run, then resuming the new session", file=sys.stderr)
         started = time.time()
         try:
-            rc, sid = _run_kimi_seed(extra, prompt)
+            rc, sid = _run_kimi_seed(prompt)
         except KeyboardInterrupt:
             sys.exit(130)
         if rc != 0:
@@ -1392,7 +1716,7 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
         if not sid:
             sid = _kimi_newest_session_since(started)
         if sid:
-            exec_or_die(["kimi", *extra, "-S", sid])
+            exec_or_die(["kimi", *_kimi_resume_flags(extra), "-S", sid])
         print("ai handoff: could not determine the seeded kimi session -- continue manually "
               "with `kimi -c`", file=sys.stderr)
         return
@@ -1438,6 +1762,23 @@ def relative_time(ts):
     if delta < 86400:
         return f"{int(delta / 3600)}h ago"
     return f"{int(delta / 86400)}d ago"
+
+
+def _same_path(a, b):
+    """True when two recorded cwds name the same directory.
+
+    Raw string equality quietly failed on the same directory written two
+    ways: macOS reports /var where a tool stored /private/var, Windows paths
+    differ in case, and a trailing separator is easy to add. Any of those
+    made `ai sessions --cwd` return nothing -- including, for a while, every
+    codex session at once."""
+    if not isinstance(a, str) or not isinstance(b, str):
+        return False
+    try:
+        left, right = os.path.normcase(os.path.realpath(a)), os.path.normcase(os.path.realpath(b))
+    except OSError:
+        left, right = os.path.normcase(os.path.normpath(a)), os.path.normcase(os.path.normpath(b))
+    return left == right
 
 
 def cmd_list(args):
@@ -1491,7 +1832,7 @@ def cmd_list(args):
 
     cwd = os.getcwd()
     if cwd_filter:
-        light = [r for r in light if r.get("cwd") == cwd]
+        light = [r for r in light if _same_path(r.get("cwd"), cwd)]
 
     # Sessions a tool started for itself are dropped as they come up rather
     # than after slicing: they shouldn't eat slots out of the --limit the
@@ -1591,40 +1932,107 @@ def _without_inherited_mark(title):
 # is only a guard against a cycle in the (hand-editable) session stores.
 HANDOFF_MAX_DEPTH = 5
 
-
-def _iter_strings(obj):
-    if isinstance(obj, str):
-        yield obj
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            yield from _iter_strings(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from _iter_strings(v)
+# An export is only read by the session it just seeded, so it has no life
+# beyond that -- but nothing deleted them, and a transcript is as long as the
+# conversation was, so `~/.cache/clisweave/handoffs` grew without bound (one
+# file per cross-tool or --cwd handoff, forever). Keep the tail of recent
+# ones: enough to re-seed a session that was handed off moments ago, and
+# little enough to bound the disk.
+HANDOFF_KEEP = 20
+HANDOFF_MAX_AGE_DAYS = 7
 
 
-def handoff_source(path, limit=60):
-    """(source_tool, source_id) if the transcript at `path` was started by
-    `ai handoff`, else None. Reads only the opening lines -- the seed prompt
-    is the session's first real message -- and, so that a session that merely
-    discusses handoffs isn't mistaken for one, only accepts a message that
-    *begins* with the seed text."""
+def prune_handoff_exports():
+    """Drop handoff exports that are past their use: anything older than
+    HANDOFF_MAX_AGE_DAYS, and anything outside the newest HANDOFF_KEEP of
+    what's left. Best-effort -- a cache sweep that fails must not fail the
+    handoff."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        entries = [os.path.join(HANDOFF_DIR, name) for name in os.listdir(HANDOFF_DIR)]
+    except OSError:
+        return
+    now = time.time()
+    stale = []
+    fresh = []
+    for path in entries:
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue  # vanished mid-sweep
+        if now - mtime > HANDOFF_MAX_AGE_DAYS * 86400:
+            stale.append(path)
+        else:
+            fresh.append((mtime, path))
+    fresh.sort()  # oldest first
+    if HANDOFF_KEEP > 0:
+        stale.extend(path for _mtime, path in fresh[:-HANDOFF_KEEP])
+    else:
+        stale.extend(path for _mtime, path in fresh)
+    for path in stale:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _handoff_seed_texts(tool, d):
+    """The text a record carries *as a message*, or [].
+
+    handoff_source trusts a seed only when it opens the session's first
+    message. Reading every string in the record instead -- as walking it
+    recursively did -- also matched a quoted copy of the seed inside a
+    record that is not a message at all: a codex approval review embeds the
+    whole conversation it is reviewing, seed included, so ordinary sessions
+    got retitled `(handoff) ...` after a session they merely mentioned."""
+    if tool == "claude":
+        if d.get("type") not in ("user", "assistant"):
+            return []
+        return _all_text_blocks(dict_field(d, "message").get("content"))
+    if tool == "codex":
+        if d.get("type") != "response_item":
+            return []
+        payload = dict_field(d, "payload")
+        if payload.get("type") != "message" or payload.get("role") not in ("user", "assistant"):
+            return []
+        return _all_text_blocks(payload.get("content"), ("input_text", "text", "output_text"))
+    if d.get("type") == "turn.prompt":
+        return _all_text_blocks(list_field(d, "input"))
+    if d.get("type") == "context.append_loop_event":
+        event = dict_field(d, "event")
+        if event.get("type") == "content.part":
+            return _all_text_blocks([dict_field(event, "part")])
+    return []
+
+
+def handoff_source(path, tool, limit=60):
+    """(source_tool, source_id) if the transcript at `path` was started by
+    `ai handoff`, else None.
+
+    Only the session's *first message* is consulted -- that is where the seed
+    prompt lands -- and only text that is a message counts, so a session that
+    merely discusses a handoff, or one whose history another tool copied, is
+    not mistaken for one."""
+    try:
+        with open_text(path) as fh:
             for i, line in enumerate(fh):
                 if i >= limit:
                     break
-                if HANDOFF_PROMPT_PREFIX not in line:
-                    continue
                 try:
                     d = json.loads(line)
                 except Exception:
                     continue
-                for s in _iter_strings(d):
-                    if s.lstrip().startswith(HANDOFF_PROMPT_PREFIX):
-                        m = HANDOFF_SEED_RE.match(s.lstrip())
+                texts = _handoff_seed_texts(tool, d)
+                if not texts:
+                    continue  # not the opening message: session_meta, a context dump, a review
+                # The first message decides; a seed appearing later is a
+                # quote, not the thing that opened the session.
+                for s in texts:
+                    stripped = s.lstrip()
+                    if stripped.startswith(HANDOFF_PROMPT_PREFIX):
+                        m = HANDOFF_SEED_RE.match(stripped)
                         if m:
                             return m.group(1), m.group(2)
+                break
     except OSError:
         pass
     return None
@@ -1669,7 +2077,7 @@ def _resolve_title_and_cwd(r, depth=0):
     # apart. Show the source session's topic instead, when it can be found.
     if depth < HANDOFF_MAX_DEPTH:
         path = _transcript_path(r)
-        source = handoff_source(path) if path else None
+        source = handoff_source(path, tool) if path else None
         record = _find_record(*source) if source else None
         if record:
             source_title = _resolve_title_and_cwd(record, depth + 1)[0]
@@ -1695,8 +2103,15 @@ def _resolve_title_and_cwd(r, depth=0):
 def resolve_row(r):
     """Turn a light record into the tuple used for both display and the
     resume cache: (tool, full_id, when, short_id, cwd, title). Shared by
-    cmd_list and `ai search`."""
+    cmd_list and `ai search`.
+
+    The cwd arrives from arbitrary JSON, so it is coerced here rather than
+    trusted: one record with {"path": "/x"} where the cwd should be reached
+    render_rows' width formatting and raised TypeError, taking the whole
+    listing down with it."""
     title, cwd_show = _resolve_title_and_cwd(r)
+    if not isinstance(cwd_show, str):
+        cwd_show = "?"
     return (r["tool"], r["id"], relative_time(r["ts"]), r["id"][:12], cwd_show, title)
 
 
@@ -1768,6 +2183,11 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
     print(header)
     indent = " " * (w_num + 2)
     for n, (tool, full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
+        # resolve_row already coerces a cwd that isn't a string; the
+        # formatter is the boundary that would crash on one, so it does not
+        # rely on every caller having done so.
+        if not isinstance(cwd_show, str):
+            cwd_show = "?"
         cwd_disp = cwd_show if len(cwd_show) <= w_cwd else "…" + cwd_show[-(w_cwd - 1):]
         line = f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  "
         if inline_why:
@@ -1780,9 +2200,21 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
             print(f"{indent}why: {why}")
 
 
+# A listing row number: ASCII digits only. str.isdigit() also accepts
+# superscripts and other numeric characters that int() then rejects, so
+# `ai ²` used to end in a ValueError traceback.
+ROW_NUMBER_RE = re.compile(r"^\d+$")
+
+
 def extract_cwd_override(args):
     """Pull a --cwd <dir> option out of args, wherever it appears (it's not
-    forwarded to the underlying tool). Returns (remaining_args, forced_cwd)."""
+    forwarded to the underlying tool). Returns (remaining_args, forced_cwd).
+
+    Validated here because this is the one place every entry point funnels
+    through: `ai resume 2 --cwd ...` used to reject a bad directory, while
+    `ai 3 codex --cwd /typo` -- the same intent, the cross-tool handoff
+    path -- exported the transcript and started the tool in whatever
+    directory happened to be current, with no warning."""
     out = []
     forced_cwd = None
     i = 0
@@ -1793,6 +2225,9 @@ def extract_cwd_override(args):
                 print("ai resume: --cwd requires a directory argument", file=sys.stderr)
                 sys.exit(1)
             forced_cwd = args[i + 1]
+            if not os.path.isdir(forced_cwd):
+                print(f"ai resume: --cwd '{forced_cwd}' is not a directory", file=sys.stderr)
+                sys.exit(1)
             i += 2
         else:
             out.append(a)
@@ -1822,7 +2257,7 @@ def resume_by_number(n, extra, forced_cwd=None):
 def cmd_resume(args):
     args, forced_cwd = extract_cwd_override(args)
 
-    if args and args[0].isdigit():
+    if args and ROW_NUMBER_RE.match(args[0]):
         resume_by_number(int(args[0]), args[1:], forced_cwd)
         return
 

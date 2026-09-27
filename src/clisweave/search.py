@@ -115,14 +115,21 @@ class JudgeError(Exception):
         self.code = code
 
 
-def gather_candidates(tool_filter):
+def gather_candidates(tool_filter, show_all=False):
+    """Every session the search should consider, newest first.
+
+    show_all is `ai search --all` and means the same thing it does for
+    `ai sessions` -- include archived sessions too. It used to be accepted by
+    cmd_search and then dropped here, so a session you could list with
+    `ai sessions --all` was unreachable by `ai search --all` in both the
+    exact and the semantic pass."""
     light = []
     if tool_filter in (None, "claude"):
         light += sessions.claude_light_records()
     if tool_filter in (None, "codex"):
         light += sessions.codex_light_records()
     if tool_filter in (None, "kimi"):
-        light += sessions.kimi_light_records(show_all=False)
+        light += sessions.kimi_light_records(show_all=show_all)
     light.sort(key=lambda r: r["ts"], reverse=True)
     return light
 
@@ -182,34 +189,46 @@ def build_prompt(topic, entries):
     )
 
 
-def parse_numbers(text, max_n):
-    nums = {int(m) for m in re.findall(r"\d+", text)}
-    return {n for n in nums if 1 <= n <= max_n}
-
-
 # "7: upgrades the firmware from A13" -> (7, "upgrades the firmware from A13")
 REASON_LINE_RE = re.compile(r"\s*(\d+)\s*[):.\-]\s*(.*)")
+# A line holding nothing but candidate numbers: "3", "3, 8", "3; 8".
+BARE_NUMBER_LINE_RE = re.compile(r"^[\s\d,;]+$")
 
 
 def parse_numbered_reasons(text, max_n):
     """Judge output -> {number: reason}.
 
-    Falls back to a bare list of numbers when the judge answers that way
-    anyway (some do, despite the instruction), in which case the reasons are
-    empty. Digits *inside* a reason ("from A13") are never read as a picked
-    number -- that is exactly what a plain number scan over this richer reply
-    would do, turning a reason into a phantom match."""
+    Two shapes, since the judge is asked for the first and sometimes answers
+    with the second anyway: numbered reasons ("7: upgrades the firmware from
+    A13"), or a plain list of numbers ("3\\n8", "3, 8"), which counts as a
+    match without a reason to show.
+
+    The reason lines are matched first, so digits *inside* a reason ("from
+    A13") are never read as a picked number -- that is what a plain number
+    scan over the whole reply would do, turning a justification into a
+    phantom match.
+
+    The converse error is just as real, and it was printing rows the judge
+    never picked: scanning every digit in a reply also reads the "7" out of
+    "No matches (I checked all 7)", which showed up in the results as a
+    semantic hit with an empty WHY column. So a bare number only counts when
+    it is the whole line, and a bare number sitting among the numbered
+    reasons still counts rather than being dropped because another line
+    happened to have a colon."""
     reasons = {}
+
+    def keep(n, reason=""):
+        if 1 <= n <= max_n:
+            reasons.setdefault(n, reason)
+
     for line in text.splitlines():
         m = REASON_LINE_RE.match(line)
-        if not m:
-            continue
-        n = int(m.group(1))
-        if 1 <= n <= max_n:
-            reasons.setdefault(n, m.group(2).strip())
-    if reasons:
-        return reasons
-    return {n: "" for n in parse_numbers(text, max_n)}
+        if m:
+            keep(int(m.group(1)), m.group(2).strip())
+        elif BARE_NUMBER_LINE_RE.match(line):
+            for n in re.findall(r"\d+", line):
+                keep(int(n))
+    return reasons
 
 
 def _call_judge(judge, prompt):
@@ -219,12 +238,14 @@ def _call_judge(judge, prompt):
         if judge in JUDGE_USES_STDIN:
             return subprocess.run(
                 judge_cmd, input=prompt, capture_output=True, text=True,
-                encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+                encoding="utf-8", errors="replace",
+                timeout=JUDGE_TIMEOUT_SECONDS,
                 preexec_fn=_die_with_parent,
             )
         return subprocess.run(
             [*judge_cmd, prompt], capture_output=True, text=True,
-            encoding="utf-8", timeout=JUDGE_TIMEOUT_SECONDS,
+            encoding="utf-8", errors="replace",
+            timeout=JUDGE_TIMEOUT_SECONDS,
             preexec_fn=_die_with_parent,
         )
     except FileNotFoundError:
@@ -237,6 +258,16 @@ def _call_judge(judge, prompt):
             file=sys.stderr,
         )
         raise JudgeError(124)
+    except (OSError, UnicodeDecodeError) as exc:
+        # Spawning can fail for reasons other than "not on PATH" -- a
+        # permission error on the binary, an argv too long for the platform,
+        # a judge whose non-UTF-8 output loses the pipe mid-read.  All of
+        # those escaped cmd_search as a traceback instead of degrading to
+        # exact-matches-only, which is every other judge failure's fate.
+        # errors="replace" above covers the decode case, but the pipe can
+        # still come back as None without it.
+        print(f"ai search: could not run '{judge_cmd[0]}': {exc}", file=sys.stderr)
+        raise JudgeError(127)
 
 
 def _is_session_limit(result):
@@ -279,7 +310,9 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
                 continue
             raise
         if result.returncode == 0:
-            return parse_numbered_reasons(result.stdout, n), j
+            # stdout can legitimately be None (a judge that died mid-write,
+            # or an unreadable pipe); parse_numbered_reasons needs a string.
+            return parse_numbered_reasons(result.stdout or "", n), j
         print(f"ai search: {j} exited with an error ({label})", file=sys.stderr)
         if result.stdout:
             print(result.stdout, file=sys.stderr)
@@ -342,7 +375,7 @@ def cmd_search(argv):
         print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--why] [--all]", file=sys.stderr)
         sys.exit(1)
 
-    candidates = gather_candidates(tool_filter)
+    candidates = gather_candidates(tool_filter, show_all)
     if not candidates:
         print("No sessions found.")
         return

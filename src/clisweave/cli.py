@@ -131,6 +131,14 @@ def build_command(tool, rest):
     else:  # kimi
         cmd = ["kimi"]
         if print_:
+            if not trailing:
+                # claude and codex both accept `-p` with the prompt on
+                # stdin; kimi's -p does not read stdin at all, so a bare
+                # `-p` here can only be a mistake (it used to reach kimi as
+                # a value-less option, and in a handoff it collided with the
+                # seed's own -p). --model/--add-dir already reject a missing
+                # value the same way.
+                raise UsageError("-p requires a prompt (kimi's -p does not read stdin)")
             cmd.append("-p")
         if continue_session:
             cmd.append("-c")
@@ -171,7 +179,7 @@ def main():
     if tool == "resume":
         sessions.cmd_resume(rest)
         return
-    if tool.isdigit():
+    if sessions.ROW_NUMBER_RE.match(tool):
         # `ai <N>` is shorthand for `ai resume <N>`.
         sessions.cmd_resume(argv)
         return
