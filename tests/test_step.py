@@ -38,8 +38,12 @@ def step_store(tmp_path, cwd_dir, files):
     return store
 
 
-def header(sid=SID, cwd="C:/work/clisweave", timestamp="2026-09-27T03:20:47.723Z"):
-    return {"type": "session", "version": 3, "id": sid, "timestamp": timestamp, "cwd": cwd}
+def header(sid=SID, cwd="C:/work/clisweave", timestamp="2026-09-27T03:20:47.723Z", name=None):
+    header = {"type": "session", "version": 3, "id": sid,
+              "timestamp": timestamp, "cwd": cwd}
+    if name is not None:
+        header["name"] = name
+    return header
 
 
 def user(text):
@@ -321,6 +325,65 @@ def test_step_rows_appear_in_the_listing(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "step" in out and "the step one" in out
     assert "claude" in out and "the claude one" in out
+
+
+# ---------- the session's own display name ----------
+# step stores the name set with `step --name` or /name on the header record
+# ({"type":"session",...,"name":"refactor auth flow"}), and repeats it as a
+# session_info record when /name sets it after the fact. None of this
+# machine's sessions carry one yet, so the shape here is the documented one.
+
+def test_a_named_session_shows_its_name_when_the_log_has_no_prompt(tmp_path):
+    step_store(tmp_path, "--C--Users-huntl--", [
+        ("f_%s.jsonl" % SID, [header(name="refactor auth flow")]),
+    ])
+    rec = sessions.step_light_records()[0]
+    assert sessions.step_title_with_name(rec["path"]) == "refactor auth flow"
+
+
+def test_a_named_session_still_shows_its_own_prompt(monkeypatch, tmp_path):
+    """The display name is a fallback, not an override: what was actually
+    asked beats a name typed at startup, the same rule kimi's stored name
+    follows."""
+    step_store(tmp_path, "--C--Users-huntl--", [
+        ("f_%s.jsonl" % SID, [header(name="refactor auth flow"), user("fix the login crash")]),
+    ])
+    rec = sessions.step_light_records()[0]
+    assert sessions.step_title_with_name(rec["path"]) == "fix the login crash"
+
+
+def test_a_blank_name_is_not_a_title(tmp_path):
+    """A name set to whitespace or a placeholder names nothing; the row would
+    rather fall through to its own first message."""
+    step_store(tmp_path, "--C--Users-huntl--", [
+        ("f_%s.jsonl" % SID, [header(name="   "), user("go on then")]),
+    ])
+    rec = sessions.step_light_records()[0]
+    assert sessions.step_title_with_name(rec["path"]) == "go on then"
+
+
+def test_a_name_set_by_slash_name_is_found_in_session_info(tmp_path):
+    """`/name` after the fact arrives as a session_info record rather than a
+    header field, so both spellings are read."""
+    step_store(tmp_path, "--C--Users-huntl--", [
+        ("f_%s.jsonl" % SID, [
+            header(), user("[Image #1]"),
+            {"type": "session_info", "id": "si1", "parentId": None,
+             "timestamp": "2026-09-27T03:30:00.000Z",
+             "name": "reproduce the MiMo login screen"},
+        ]),
+    ])
+    rec = sessions.step_light_records()[0]
+    assert sessions.step_title_with_name(rec["path"]) == "reproduce the MiMo login screen"
+
+
+def test_a_name_with_newlines_is_flattened(tmp_path):
+    """Titles are printed straight into a table column."""
+    step_store(tmp_path, "--C--Users-huntl--", [
+        ("f_%s.jsonl" % SID, [header(name="refactor" + chr(10) + "auth   flow")]),
+    ])
+    rec = sessions.step_light_records()[0]
+    assert sessions.step_title_with_name(rec["path"]) == "refactor auth flow"
 
 
 def test_handoff_exports_the_conversation_and_starts_step(monkeypatch, tmp_path):

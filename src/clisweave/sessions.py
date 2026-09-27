@@ -1811,19 +1811,25 @@ def parse_step_timestamp(value):
 
 
 def step_session_header(path):
-    """(id, cwd, started) from a step session file's opening record, or
-    (None, None, 0). Reads only as far as the first session record -- the
-    header is the first line step writes."""
+    """(id, cwd, started, name) from a step session file's opening record, or
+    (None, None, 0, None). Reads only as far as the first session record --
+    the header is the first line step writes.
+
+    `name` is the display name set with `step --name` or /name. The format
+    keeps it on the header, so it is there from the first line rather than
+    being discovered later the way kimi's own generated name is."""
     for i, d in enumerate(read_jsonl(path)):
         if i > 20:
             break
         if isinstance(d, dict) and d.get("type") == "session":
             sid = d.get("id")
             cwd = d.get("cwd")
+            name = d.get("name")
             return (sid if isinstance(sid, str) else None,
                     cwd if isinstance(cwd, str) else None,
-                    parse_step_timestamp(d.get("timestamp")))
-    return None, None, 0
+                    parse_step_timestamp(d.get("timestamp")),
+                    name if isinstance(name, str) else None)
+    return None, None, 0, None
 
 
 def step_light_records(show_all=False):
@@ -1841,7 +1847,7 @@ def step_light_records(show_all=False):
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        sid, cwd, started = step_session_header(path)
+        sid, cwd, started, name = step_session_header(path)
         if not sid:
             sid = os.path.splitext(os.path.basename(path))[0]
         if not show_all and sid.startswith("subagent-"):
@@ -1855,6 +1861,7 @@ def step_light_records(show_all=False):
             # fallback, for a session whose header was never flushed.
             "cwd": cwd or decode_project_dir_name(os.path.basename(os.path.dirname(path))),
             "started": started,
+            "name": name,
         }
     return list(by_id.values())
 
@@ -1926,6 +1933,41 @@ def step_title(path):
     except OSError:
         pass
     return _title_or_placeholder(title, fallback)
+
+
+def _step_display_name(path):
+    """The session's display name, if it has one, else None.
+
+    step writes it to the header ({"type":"session",...,"name":"refactor auth
+    flow"}), and a `session_info` record carries the same thing when /name
+    sets it after the fact. Only a real name counts: the selector shows it in
+    place of the first message, so a session named with whitespace or a
+    placeholder is better left to its own first prompt."""
+    _sid, _cwd, _started, name = step_session_header(path)
+    if name and name.strip():
+        return " ".join(name.split())[:70]
+    for i, d in enumerate(read_jsonl(path)):
+        if i > 200:
+            break
+        if not isinstance(d, dict) or d.get("type") != "session_info":
+            continue
+        for key in ("name", "displayName", "title"):
+            value = d.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:70]
+    return None
+
+
+def step_title_with_name(path):
+    """step_title, falling back to the session's own display name.
+
+    A session opened as `step --name "refactor auth flow"` with no prompt yet
+    -- or one every message of which is noise -- names itself, and that name
+    describes the work where a seed prompt or `(no title)` would not."""
+    title = step_title(path)
+    if title == "(no title)":
+        return _title_or_placeholder(_step_display_name(path), "")
+    return title
 
 
 def step_handoff_messages(path):
@@ -2349,7 +2391,7 @@ def _find_record(tool, sid):
 def _resolve_title_and_cwd(r, depth=0):
     tool = r["tool"]
     if tool == "step":
-        title = step_title(r["path"])
+        title = step_title_with_name(r["path"])
         cwd_show = r.get("cwd") or "?"
     elif tool == "claude":
         title, cwd_resolved = claude_title_and_cwd(r["path"], r.get("cwd"))

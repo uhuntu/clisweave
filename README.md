@@ -2,7 +2,7 @@
 
 [![test](https://github.com/uhuntu/clisweave/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/clisweave/actions/workflows/test.yml)
 
-A tiny, dependency-free wrapper that weaves four AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Kimi CLI](https://www.kimi-cli.com/), and [step](https://github.com/stepfun/step) — behind one set of flags, plus cross-tool session discovery, resume, and handoff.
+A tiny, dependency-free wrapper that weaves four AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Kimi CLI](https://www.kimi-cli.com/), and [step](https://github.com/stepfun-ai/Step-Code) — behind one set of flags, plus cross-tool session discovery, resume, and handoff.
 
 No daemon, no config file, no build step — just a small Python package (`src/clisweave/`) that reads each tool's own on-disk session store directly.
 
@@ -147,7 +147,9 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 - **claude**: `~/.claude/projects/*/*.jsonl`
 - **codex**: `~/.codex/sessions/**/*.jsonl`, plus `~/.codex/session_index.jsonl` for auto-generated titles
 - **kimi**: `~/.kimi-code/session_index.jsonl` + each session's `state.json` / `agents/main/wire.jsonl`
-- **step**: `~/.stepcode/agent/sessions/<encoded-cwd>/<timestamp>_<session-id>.jsonl`, one file per session — or `$STEP_CODING_AGENT_SESSION_DIR` if set. The id and cwd are the `session` record on the file's first line; the encoded directory is only the fallback when that record is missing. Sessions step started for itself (`subagent-…` ids) are left out unless `--all` asks for them.
+- **step**: `~/.stepcode/agent/sessions/<encoded-cwd>/<timestamp>_<session-id>.jsonl`, one file per session — or `$STEP_CODING_AGENT_SESSION_DIR` if set. The id and cwd are the `session` record on the file's first line; the encoded directory is only the fallback when that record is missing. A session named with `step --name` or `/name` shows that name when its log holds no prompt to read. Sessions step started for itself (`subagent-…` ids) are left out unless `--all` asks for them.
+
+  That layout is the documented [session file format](https://pi.dev/docs/latest/session-format) shared by the pi-derived CLIs, so reading these files directly is the sanctioned route rather than a hack — the same reason claude's `projects/*.jsonl` and codex's `sessions/**` are read as they are.
 
 Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing. Resuming a codex thread appends a *new* rollout file instead of extending the one it already had, so a single session id can own several; only the newest is read — for the row's timestamp, title, cwd, snippet, and any handoff. A codex fork or subagent thread has no prompt of its own, so it is named after the thread it forked from (`(fork) …`), the way a handoff is named after the session it continues. kimi names its own sessions too, and that name is used when its log holds no text prompt to read — but only when it is a real name, not the `[image]`/`New Session` placeholder it uses until it has one. A message relayed by a bridge (openclaw) behind its `Conversation info: ⟦openclaw:ctx⟧` header is read as what was said after the header, not as the header itself.
 
