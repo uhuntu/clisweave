@@ -46,6 +46,34 @@ def test_claude_print_without_a_prompt_is_allowed():
     assert build_command("claude", ["-p"]) == ["claude", "-p"]
 
 
+def test_step_all_flags():
+    cmd = build_command("step", ["-p", "-c", "-m", "step-5-preview", "-y", "fix it"])
+    assert cmd == ["step", "-p", "-c", "--model", "step-5-preview",
+                   "--approval-mode", "auto", "--non-interactive-approval", "allow", "fix it"]
+
+
+def test_step_yolo_also_covers_the_no_ui_fallback():
+    """step decides tool approval with --approval-mode when there is a UI and
+    falls back to --non-interactive-approval when there is not, which denies
+    by default. -y has to set both or `ai step -p -y` still gets stopped."""
+    cmd = build_command("step", ["-y", "go"])
+    assert cmd == ["step", "--approval-mode", "auto",
+                   "--non-interactive-approval", "allow", "go"]
+
+
+def test_step_rejects_add_dir():
+    """step has no per-workspace directory flag; the nearest thing it has,
+    --session-dir, is where sessions live, not what to work on."""
+    with pytest.raises(UsageError):
+        build_command("step", ["--add-dir", "/tmp", "go"])
+
+
+def test_step_accepts_a_plain_prompt():
+    """Unlike kimi, step takes a bare positional prompt, which is what makes
+    `ai 3 step` a simple handoff rather than a seeded one-shot."""
+    assert build_command("step", ["hello"]) == ["step", "hello"]
+
+
 def test_multiple_add_dirs_repeat_flag():
     cmd = build_command("claude", ["--add-dir", "/a", "--add-dir", "/b"])
     assert cmd == ["claude", "--add-dir", "/a", "--add-dir", "/b"]

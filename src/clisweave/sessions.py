@@ -18,7 +18,7 @@ CODEX_HOME = os.path.join(HOME, ".codex")
 KIMI_HOME = os.path.join(HOME, ".kimi-code")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
-TOOLS = ("claude", "codex", "kimi")
+TOOLS = ("claude", "codex", "kimi", "step")
 
 # Remembers the last `ai sessions` listing so `ai resume <N>` can refer to a
 # row by its printed number instead of needing the full/prefix session id.
@@ -178,15 +178,24 @@ def decode_project_dir_name(proj_dir):
     at least keeps the guess a normal-looking path --
     "-home-hunt--openclaw-workspace" decoded literally to
     "/home/hunt//openclaw/workspace", a double slash no real path has."""
-    if re.match(r"^[A-Za-z]--", proj_dir):
-        # A Windows path: claude keeps the colon in, so the drive letter comes
-        # back as "C--Users-hunt-work-proj" and a literal decode of that is
-        # not a path at all -- the row showed garbage, `--cwd` never matched
-        # it, and `ai resume` would not chdir there.
-        return proj_dir[0] + ":/" + re.sub(r"-+", "/", proj_dir[2:].lstrip("-"))
+    # claude's spelling of a Windows path: "C--Users-hunt-work-proj", the
+    # drive letter first and no leading separator. A literal decode of that
+    # is not a path at all -- the row showed garbage, `--cwd` never matched
+    # it, and `ai resume` would not chdir there.
+    m = re.match(r"^([A-Za-z])--", proj_dir)
+    if m:
+        return m.group(1) + ":/" + re.sub(r"-+", "/", proj_dir[2:].lstrip("-"))
     if not proj_dir.startswith("-"):
         return proj_dir
-    return re.sub(r"-+", "/", proj_dir)
+    collapsed = re.sub(r"-+", "/", proj_dir)
+    # step spells the same path with a separator either side,
+    # "--C--Users-hunt-work-proj--", so the drive letter lands after one.
+    m = re.match(r"^/([A-Za-z])/", collapsed)
+    if m:
+        collapsed = m.group(1) + ":" + collapsed[2:]
+    # A trailing separator is an artifact of the encoding, not part of the
+    # path, and it would show in the CWD column.
+    return collapsed.rstrip("/") or collapsed
 
 
 def claude_light_records():
@@ -1283,7 +1292,7 @@ def session_literal_scan_files(record):
     which stays OUT of wire.jsonl -- a real session mentioned the searched
     term only there and was unfindable)."""
     tool = record["tool"]
-    if tool == "claude":
+    if tool in ("claude", "step"):
         return [record["path"]]
     if tool == "codex":
         path = codex_rollout_path(record["id"])
@@ -1323,6 +1332,26 @@ def _literal_texts(tool, entry):
             return [_codex_tool_call_text(payload)]
         if ptype in ("function_call_output", "custom_tool_call_output"):
             return [payload.get("output", "")]
+    if tool == "step":
+        if kind != "message":
+            return []
+        message = dict_field(entry, "message")
+        if message.get("role") not in ("user", "assistant", "toolResult"):
+            return []
+        texts = []
+        for block in list_field(message, "content"):
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                texts.append(block_text(block))
+            elif btype == "thinking":
+                thinking = block.get("thinking")
+                if isinstance(thinking, str):
+                    texts.append(thinking)
+            elif btype == "toolCall":
+                texts.append(_step_tool_call_text(block))
+        return texts
     if tool == "kimi":
         if kind == "turn.prompt":
             return _all_text_blocks(list_field(entry, "input"))
@@ -1483,6 +1512,12 @@ def session_handoff_details(tool, sid):
             return None
         cwd = codex_cwd(sid)
         messages = codex_handoff_messages(path)
+    elif tool == "step":
+        record = next((r for r in step_light_records(show_all=True) if r["id"] == sid), None)
+        if not record:
+            return None
+        cwd = record.get("cwd")
+        messages = step_handoff_messages(record["path"])
     else:
         record = next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
         if not record:
@@ -1747,6 +1782,252 @@ def kimi_resolve(prefix):
     return sorted(set(matches))
 
 
+# ---------- step ----------
+# step (the StepCode CLI) keeps one JSONL per session under its own agent
+# directory, grouped by the encoded cwd -- the layout claude uses, and the
+# same "every non-alphanumeric is a dash" encoding, so decode_project_dir_name
+# reads it. The authoritative id and cwd are the `session` record on the
+# file's first line; the filename carries a timestamp prefix, except for the
+# `subagent-<uuid>` files step's own subagents write, which have none.
+STEP_SESSIONS = os.environ.get(
+    "STEP_CODING_AGENT_SESSION_DIR",
+    os.path.join(HOME, ".stepcode", "agent", "sessions"))
+
+# step marks a pasted image with a *text* block reading "[Image #1]" rather
+# than claude's "[Image: source: ...]" spelling.
+STEP_IMAGE_PREFIX = "[Image #"
+
+
+def parse_step_timestamp(value):
+    """step's ISO-8601-with-Z timestamps ("2026-09-27T03:20:47.723Z") to
+    seconds since epoch, or 0. Truncated to whole seconds, which is all the
+    listing's relative time needs."""
+    if not isinstance(value, str):
+        return 0
+    try:
+        return calendar.timegm(time.strptime(value[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return 0
+
+
+def step_session_header(path):
+    """(id, cwd, started) from a step session file's opening record, or
+    (None, None, 0). Reads only as far as the first session record -- the
+    header is the first line step writes."""
+    for i, d in enumerate(read_jsonl(path)):
+        if i > 20:
+            break
+        if isinstance(d, dict) and d.get("type") == "session":
+            sid = d.get("id")
+            cwd = d.get("cwd")
+            return (sid if isinstance(sid, str) else None,
+                    cwd if isinstance(cwd, str) else None,
+                    parse_step_timestamp(d.get("timestamp")))
+    return None, None, 0
+
+
+def step_light_records(show_all=False):
+    """One record per step session, newest write wins per id.
+
+    step's own subagents write `subagent-<uuid>.jsonl` files: a session the
+    tool started for itself, holding another session's context rather than a
+    request of anyone's. Like codex's approval reviews, those are left out
+    unless --all asks for them."""
+    by_id = {}
+    if not os.path.isdir(STEP_SESSIONS):
+        return []
+    for path in glob.glob(os.path.join(STEP_SESSIONS, "*", "*.jsonl")):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        sid, cwd, started = step_session_header(path)
+        if not sid:
+            sid = os.path.splitext(os.path.basename(path))[0]
+        if not show_all and sid.startswith("subagent-"):
+            continue
+        prev = by_id.get(sid)
+        if prev is not None and prev["ts"] >= mtime:
+            continue
+        by_id[sid] = {
+            "tool": "step", "id": sid, "ts": mtime, "path": path,
+            # The cwd is in the header; the encoded directory is only the
+            # fallback, for a session whose header was never flushed.
+            "cwd": cwd or decode_project_dir_name(os.path.basename(os.path.dirname(path))),
+            "started": started,
+        }
+    return list(by_id.values())
+
+
+def step_resolve(prefix):
+    matches = []
+    for r in step_light_records(show_all=True):
+        if r["id"].startswith(prefix):
+            matches.append(r["id"])
+    return sorted(set(matches))
+
+
+def step_session_cwd(sid):
+    for r in step_light_records(show_all=True):
+        if r["id"] == sid:
+            return r["cwd"]
+    return None
+
+
+def _step_message_text(message):
+    """The text of a step message: a plain string, or its first text block.
+
+    A `thinking` block holds the model's reasoning and a `toolCall` block
+    holds a call, so neither is what the user (or the assistant) said."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return block_text(block)
+    return None
+
+
+def step_title(path):
+    """First genuine user prompt in a step session.
+
+    step's record shape is its own -- a message record carrying role and
+    content blocks -- but the question this answers is the one claude's
+    reader answers, so the same injected/paste/trivial filters apply, and a
+    session whose every message is noise falls back to its first prompt the
+    same way."""
+    fallback = None
+    title = None
+    try:
+        with open_text(path) as fh:
+            for i, line in enumerate(fh):
+                if i > TITLE_SCAN_LINES:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(d, dict) or d.get("type") != "message":
+                    continue
+                message = dict_field(d, "message")
+                if message.get("role") != "user":
+                    continue
+                text = unwrap_openclaw_ctx(_step_message_text(message) or "")
+                if not text.strip():
+                    continue
+                stripped = " ".join(text.split())
+                if stripped.startswith(STEP_IMAGE_PREFIX):
+                    continue  # a captionless paste names nothing
+                if fallback is None:
+                    fallback = stripped[:70]
+                if title is None and not _is_injected_or_pasted(text) and not is_trivial_title(stripped):
+                    title = stripped[:70]
+    except OSError:
+        pass
+    return _title_or_placeholder(title, fallback)
+
+
+def step_handoff_messages(path):
+    """Every user and assistant message in a step session, in order, as the
+    (role, text) pairs `ai handoff` exports.
+
+    A toolResult message is the tool's own output, which the receiving session
+    can reproduce by running the tool again; the thinking blocks are the
+    model's reasoning about it. Both are left out so the export is what was
+    said, not everything that happened."""
+    messages = []
+    for d in read_jsonl(path):
+        if not isinstance(d, dict) or d.get("type") != "message":
+            continue
+        message = dict_field(d, "message")
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        texts = []
+        for block in list_field(message, "content"):
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block_text(block)
+            if text.strip():
+                texts.append(text)
+        if texts:
+            messages.append((role, "\n\n".join(texts)))
+    return messages
+
+
+def _step_tool_call_text(block):
+    """Human-meaningful text from a step toolCall block.
+
+    A shell call's command, else the tool name and its arguments: a call's
+    arguments are often the only place a term appears anywhere in a session,
+    which is why codex's function_call inputs are scanned too."""
+    name = block.get("name") if isinstance(block.get("name"), str) else ""
+    arguments = block.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            pass
+    command = None
+    if isinstance(arguments, dict):
+        command = arguments.get("command") or arguments.get("cmd")
+        if isinstance(command, list):
+            command = " ".join(str(part) for part in command)
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    body = arguments if isinstance(arguments, str) else json.dumps(
+        arguments, ensure_ascii=False, default=str)
+    return " ".join(part for part in (name, body) if part)[:400]
+
+
+def step_snippet(path, max_messages=12, max_chars=800):
+    """Longer excerpt than step_title's single prompt, for `ai search`.
+
+    Includes assistant text and the model's thinking, not just user prompts,
+    for the reason claude_snippet and kimi_snippet do: the substance of an
+    agentic session is usually in the responses. Also includes tool calls,
+    which is where a term often lives and nowhere else. Thinking blocks are
+    truncated per block -- they run long, and one would otherwise take the
+    whole budget.
+    Sampled evenly across the whole conversation via sample_stride -- see
+    its docstring."""
+    texts = []
+    try:
+        with open_text(path) as fh:
+            for i, line in enumerate(fh):
+                if i > 20000:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(d, dict) or d.get("type") != "message":
+                    continue
+                message = dict_field(d, "message")
+                if message.get("role") not in ("user", "assistant", "toolResult"):
+                    continue
+                for block in list_field(message, "content"):
+                    if not isinstance(block, dict):
+                        continue
+                    kind = block.get("type")
+                    if kind == "text":
+                        text = block_text(block).strip().replace("\n", " ")
+                        if text and not text.startswith(STEP_IMAGE_PREFIX):
+                            texts.append(text)
+                    elif kind == "toolCall":
+                        text = _step_tool_call_text(block).strip().replace("\n", " ")
+                        if text:
+                            texts.append(text)
+                    elif kind == "thinking":
+                        text = block.get("thinking")
+                        if isinstance(text, str) and text.strip():
+                            texts.append(text.strip().replace("\n", " ")[:400])
+    except OSError:
+        pass
+    return join_with_fair_budget(sample_stride(texts, max_messages), max_chars)
+
+
 # ---------- shared ----------
 
 def relative_time(ts):
@@ -1827,6 +2108,8 @@ def cmd_list(args):
         light += codex_light_records()
     if tool_filter in (None, "kimi"):
         light += kimi_light_records(show_all)
+    if tool_filter in (None, "step"):
+        light += step_light_records(show_all)
 
     light.sort(key=lambda r: r["ts"], reverse=True)
 
@@ -1877,6 +2160,8 @@ def cmd_stats(args):
         light += codex_light_records()
     if tool_filter in (None, "kimi"):
         light += kimi_light_records(True)
+    if tool_filter in (None, "step"):
+        light += step_light_records(True)
 
     total = len(light)
     if total == 0:
@@ -2039,7 +2324,7 @@ def handoff_source(path, tool, limit=60):
 
 
 def _transcript_path(r):
-    if r["tool"] == "claude":
+    if r["tool"] in ("claude", "step"):
         return r.get("path")
     if r["tool"] == "codex":
         return codex_rollout_path(r["id"])
@@ -2056,12 +2341,17 @@ def _find_record(tool, sid):
         return {"tool": "codex", "id": sid, "ts": 0, "title": codex_thread_names().get(sid)}
     if tool == "kimi":
         return next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
+    if tool == "step":
+        return next((r for r in step_light_records(show_all=True) if r["id"] == sid), None)
     return None
 
 
 def _resolve_title_and_cwd(r, depth=0):
     tool = r["tool"]
-    if tool == "claude":
+    if tool == "step":
+        title = step_title(r["path"])
+        cwd_show = r.get("cwd") or "?"
+    elif tool == "claude":
         title, cwd_resolved = claude_title_and_cwd(r["path"], r.get("cwd"))
         cwd_show = cwd_resolved or "?"
     elif tool == "codex":
@@ -2272,12 +2562,16 @@ def cmd_resume(args):
             exec_or_die(["claude", "--resume"])
         elif tool == "codex":
             exec_or_die(["codex", "resume"])
-        else:
+        elif tool == "kimi":
             exec_or_die(["kimi", "-S"])
+        else:
+            # no id -> step opens its own session selector
+            exec_or_die(["step", "--resume"])
         return
 
     prefix, extra = rest[0], rest[1:]
-    resolver = {"claude": claude_resolve, "codex": codex_resolve, "kimi": kimi_resolve}[tool]
+    resolver = {"claude": claude_resolve, "codex": codex_resolve, "kimi": kimi_resolve,
+                "step": step_resolve}[tool]
     matches = resolver(prefix)
 
     if len(matches) == 1:
@@ -2290,7 +2584,8 @@ def cmd_resume(args):
             print(f"  {m}", file=sys.stderr)
         sys.exit(1)
 
-    cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd}[tool]
+    cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd,
+                  "step": step_session_cwd}[tool]
 
     if forced_cwd:
         if not os.path.isdir(forced_cwd):
@@ -2322,6 +2617,9 @@ def cmd_resume(args):
         exec_or_die(["claude", "--resume", full_id, *extra])
     elif tool == "codex":
         exec_or_die(["codex", "resume", full_id, *extra])
+    elif tool == "step":
+        # step takes a path or a partial id, and resumes that session directly
+        exec_or_die(["step", "--resume", full_id, *extra])
     else:
         exec_or_die(["kimi", "-S", full_id, *extra])
 

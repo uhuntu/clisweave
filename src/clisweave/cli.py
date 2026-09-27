@@ -6,12 +6,12 @@ import sys
 
 from . import __version__, search, sessions, update
 
-USAGE = """Usage: ai <claude|codex|kimi> [common-options] [prompt] [-- extra native args]
+USAGE = """Usage: ai <claude|codex|kimi|step> [common-options] [prompt] [-- extra native args]
        ai sessions [--tool T] [--limit N|all] [--cwd] [--all]
        ai full [--tool T] [--cwd] [--all]
        ai search <topic> [--tool T] [--judge claude|codex|kimi]
-       ai resume <claude|codex|kimi|N> [session-id-or-prefix] [--cwd <dir>]
-       ai <N> <claude|codex|kimi> [native-options]
+       ai resume <claude|codex|kimi|step|N> [session-id-or-prefix] [--cwd <dir>]
+       ai <N> <claude|codex|kimi|step> [native-options]
        ai update [tools|all]
        ai stats [--tool T]
 
@@ -50,7 +50,7 @@ Examples:
   ai stats            # session counts per tool, oldest/newest, top directories
 """
 
-TOOLS = ("claude", "codex", "kimi")
+TOOLS = ("claude", "codex", "kimi", "step")
 
 
 class UsageError(Exception):
@@ -128,6 +128,25 @@ def build_command(tool, rest):
             cmd += ["--add-dir", d]
         if yolo:
             cmd.append("--approve-for-me")
+    elif tool == "step":
+        cmd = ["step"]
+        if print_:
+            cmd.append("-p")
+        if continue_session:
+            cmd.append("-c")
+        if model:
+            cmd += ["--model", model]
+        if add_dirs:
+            # step has no per-workspace directory flag of its own; the closest
+            # it has is --session-dir, which is where sessions live rather
+            # than what to work on.
+            raise UsageError("--add-dir is not supported for step")
+        if yolo:
+            # step's approval modes are confirm/auto/strict, and "auto" is the
+            # auto-approve one. With no approval UI (a -p run) approval falls
+            # back to --non-interactive-approval, which denies by default, so
+            # -y has to cover both.
+            cmd += ["--approval-mode", "auto", "--non-interactive-approval", "allow"]
     else:  # kimi
         cmd = ["kimi"]
         if print_:

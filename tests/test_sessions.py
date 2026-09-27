@@ -8,14 +8,17 @@ from clisweave import sessions
 
 
 @pytest.fixture(autouse=True)
-def _reset_codex_path_cache():
+def _reset_codex_path_cache(monkeypatch):
     # codex_rollout_path() lazily caches sessions.CODEX_HOME's rollout file
     # listing in a module-level global; reset it around every test so one
     # test's tmp_path can't leak into another's.
     sessions._codex_path_index = None
+    # A listing test must see the three stores it builds by hand and nothing
+    # else: step's is on this machine with real sessions in it, so point it
+    # out of the way unless a test sets one up itself.
+    monkeypatch.setattr(sessions, "STEP_SESSIONS", os.path.join(os.sep, "no", "step", "sessions"))
     yield
     sessions._codex_path_index = None
-
 
 def write_codex_rollout(codex_home, sid, cwd=None, user_text=None, mtime=None,
                         stamp="2026-08-14T00-00-00", parent=None):

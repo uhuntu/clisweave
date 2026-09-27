@@ -13,6 +13,8 @@ TOOL_UPDATE_CMD = {
     # TTY the selection aborts and the whole update errors out ("This operation
     # was aborted"). Confirmed live 2026-09-24.
     "kimi": ["kimi", "update", "--yes"],
+    # step's updater takes no subcommand and answers in one shot
+    "step": ["step", "update"],
 }
 
 # If this is set, failed updates retry through this proxy. Confirmed live

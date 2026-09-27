@@ -98,6 +98,7 @@ def test_update_tools_skips_missing_binaries(monkeypatch, capsys):
     assert "claude: not installed, skipping" in out
     assert "codex: not installed, skipping" in out
     assert "kimi: not installed, skipping" in out
+    assert "step: not installed, skipping" in out
 
 
 def test_update_tools_runs_each_installed_tools_update_command(monkeypatch):
@@ -114,7 +115,8 @@ def test_update_tools_runs_each_installed_tools_update_command(monkeypatch):
     monkeypatch.setattr(update.subprocess, "run", fake_run)
 
     assert update.update_tools() == 0
-    assert calls == [["claude", "update"], ["codex", "update"], ["kimi", "update", "--yes"]]
+    assert calls == [["claude", "update"], ["codex", "update"],
+                     ["kimi", "update", "--yes"], ["step", "update"]]
 
 
 def test_update_tools_prints_hint_when_claude_fails(monkeypatch, capsys):
@@ -125,7 +127,8 @@ def test_update_tools_prints_hint_when_claude_fails(monkeypatch, capsys):
             self.returncode = code
 
     codes = {"claude": 1, "codex": 0, "kimi": 0}
-    monkeypatch.setattr(update.subprocess, "run", lambda argv, **kw: FakeResult(codes[argv[0]]))
+    monkeypatch.setattr(update.subprocess, "run",
+                        lambda argv, **kw: FakeResult(codes.get(argv[0], 0)))
 
     update.update_tools()
 
@@ -267,7 +270,8 @@ def test_update_tools_no_hint_when_kimi_fails(monkeypatch, capsys):
             self.returncode = code
 
     codes = {"claude": 0, "codex": 0, "kimi": 1}
-    monkeypatch.setattr(update.subprocess, "run", lambda argv, **kw: FakeResult(codes[argv[0]]))
+    monkeypatch.setattr(update.subprocess, "run",
+                        lambda argv, **kw: FakeResult(codes.get(argv[0], 0)))
 
     update.update_tools()
 
@@ -285,7 +289,8 @@ def test_update_tools_prints_proxy_hint_when_codex_fails(monkeypatch, capsys):
             self.returncode = code
 
     codes = {"claude": 0, "codex": 1, "kimi": 0}
-    monkeypatch.setattr(update.subprocess, "run", lambda argv, **kw: FakeResult(codes[argv[0]]))
+    monkeypatch.setattr(update.subprocess, "run",
+                        lambda argv, **kw: FakeResult(codes.get(argv[0], 0)))
 
     update.update_tools()
 
@@ -301,18 +306,18 @@ def test_update_tools_reports_worst_exit_code_but_keeps_going(monkeypatch):
         def __init__(self, code):
             self.returncode = code
 
-    codes = {"claude": 0, "codex": 3, "kimi": 0}
+    codes = {"claude": 0, "codex": 3, "kimi": 0, "step": 0}
     calls = []
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        return FakeResult(codes[argv[0]])
+        return FakeResult(codes.get(argv[0], 0))
 
     monkeypatch.setattr(update.subprocess, "run", fake_run)
 
     assert update.update_tools() == 3
-    # all three still ran despite codex failing
-    assert len(calls) == 3
+    # every installed tool still ran despite codex failing
+    assert len(calls) == 4
 
 
 # ---------- cmd_update dispatch modes ----------

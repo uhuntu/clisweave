@@ -75,6 +75,9 @@ JUDGE_CMD = {
     # trusted directory".
     "codex": ["codex", "exec", "--ephemeral", "--skip-git-repo-check"],
     "kimi": ["kimi", "-p"],
+    # --no-session: step has no per-run ephemeral flag beyond that, and the
+    # judge's prompt would otherwise land in the listing this search reads.
+    "step": ["step", "-p", "--no-session"],
 }
 DEFAULT_JUDGE = "claude"
 
@@ -130,6 +133,8 @@ def gather_candidates(tool_filter, show_all=False):
         light += sessions.codex_light_records()
     if tool_filter in (None, "kimi"):
         light += sessions.kimi_light_records(show_all=show_all)
+    if tool_filter in (None, "step"):
+        light += sessions.step_light_records(show_all=show_all)
     light.sort(key=lambda r: r["ts"], reverse=True)
     return light
 
@@ -142,6 +147,8 @@ def snippet_for(r):
         # title (thread_name, when available) is already shown separately
         # in the prompt line -- the snippet's job is additional content.
         return sessions.codex_rollout_snippet(r["id"])
+    if tool == "step":
+        return sessions.step_snippet(r["path"])
     return sessions.kimi_snippet(r["dir"])
 
 
@@ -291,7 +298,7 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     batch, or one chunk of one. Returns the picked local indices and the
     judge that succeeded. Raises JudgeError if every judge in the fallback
     sequence fails."""
-    fallback_order = [DEFAULT_JUDGE, "codex", "kimi"]
+    fallback_order = [DEFAULT_JUDGE, "codex", "kimi", "step"]
     if judge_explicit:
         judges = [judge]
     else:
