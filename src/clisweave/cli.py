@@ -52,6 +52,12 @@ Examples:
 
 TOOLS = ("claude", "codex", "kimi", "step")
 
+# Everything `ai <x>` accepts that is not a tool. The unknown-tool error names
+# this list, and the test asserts it matches what main() actually dispatches,
+# so adding a subcommand cannot leave the message stale the way it was when
+# `stats` and `step` were both missing from it.
+SUBCOMMANDS = ("sessions", "full", "search", "resume", "update", "stats")
+
 
 class UsageError(Exception):
     """Bad arguments to `ai <tool> ...`. Caught by main() and reported
@@ -64,7 +70,8 @@ def build_command(tool, rest):
     command to run. Pure function, no I/O — raises UsageError on bad
     input instead of exiting, so it's easy to unit test."""
     if tool not in TOOLS:
-        raise UsageError(f"unknown tool '{tool}' (expected claude, codex, or kimi, or sessions/full/search/resume/update)")
+        raise UsageError(f"unknown tool '{tool}' (expected one of {', '.join(TOOLS)}, "
+                        f"{', '.join(SUBCOMMANDS)})")
 
     print_ = False
     continue_session = False

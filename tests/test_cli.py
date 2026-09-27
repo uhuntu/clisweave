@@ -1,5 +1,9 @@
+import inspect
+import re
+
 import pytest
 
+from clisweave import cli
 from clisweave.cli import UsageError, build_command
 
 
@@ -77,6 +81,24 @@ def test_step_accepts_a_plain_prompt():
 def test_multiple_add_dirs_repeat_flag():
     cmd = build_command("claude", ["--add-dir", "/a", "--add-dir", "/b"])
     assert cmd == ["claude", "--add-dir", "/a", "--add-dir", "/b"]
+
+
+def test_the_unknown_tool_error_names_every_command_it_dispatches():
+    """`ai all` reported "expected ... sessions/full/search/resume/update" --
+    five subcommands, while main() dispatches six, and neither `stats` nor
+    `step` was in the list. The message is generated from the same constant
+    the tests check main() against, so it cannot drift again silently."""
+    dispatched = set()
+    source = inspect.getsource(cli.main)
+    for name in re.findall(r'tool == "(\w+)"', source):
+        dispatched.add(name)
+
+    with pytest.raises(UsageError) as exc_info:
+        build_command("all", [])
+
+    message = str(exc_info.value)
+    for name in sorted(dispatched | set(cli.TOOLS)):
+        assert name in message, name
 
 
 def test_double_dash_passes_rest_through_untouched():
