@@ -247,7 +247,7 @@ def test_cmd_search_filters_to_llm_picked_rows(monkeypatch, capsys):
     search.cmd_search(["nfc", "frequency", "lock"])
 
     argv, kwargs = calls[0]
-    assert argv[:2] == ["claude", "-p"]
+    assert argv[:2] == ["step", "-p"]
     assert "nfc frequency lock" in kwargs["input"]  # long prompt passed via stdin
     assert len(rendered) == 1
     assert [row[1] for row in rendered[0]] == ["id-1"]
@@ -421,7 +421,7 @@ def test_cmd_search_uses_requested_judge_tool(monkeypatch):
     assert calls[0][:2] == ["kimi", "-p"]
 
 
-def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
+def test_cmd_search_fallback_on_default_judge_session_limit(monkeypatch, capsys):
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
@@ -432,7 +432,7 @@ def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
 
     calls = []
 
-    class ClaudeLimit:
+    class Limit:
         returncode = 1
         stdout = "You've hit your session limit · resets 1:40pm"
         stderr = ""
@@ -442,22 +442,24 @@ def test_cmd_search_fallback_on_claude_session_limit(monkeypatch, capsys):
         stdout = "none"
         stderr = ""
 
-    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or (CodexOK if len(calls) > 1 else ClaudeLimit)())
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or (CodexOK if len(calls) > 1 else Limit)())
 
     search.cmd_search(["topic"])
 
     assert len(calls) == 2
-    assert calls[0][0][0][:2] == ["claude", "-p"]
+    assert calls[0][0][0][:2] == [search.DEFAULT_JUDGE, "-p"]
     assert calls[1][0][0][:2] == ["codex", "exec"]
     err = capsys.readouterr().err
     assert "falling back" in err
 
 
-def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
+def test_cmd_search_fallback_on_default_judge_auth_failure(monkeypatch, capsys):
     """Regression test: an expired Claude OAuth token failed all 6 judge
     batches with a 401 and never tried codex/kimi, because only a session
-    limit or a timeout triggered the fallback. It makes claude just as
-    unusable for the run, so it should fall through the same way."""
+    limit or a timeout triggered the fallback. It makes a judge just as
+    unusable for the run, so it should fall through the same way. The check
+    is not claude-specific: codex and kimi report expired credentials the
+    same way, and the default judge here is step."""
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
@@ -468,7 +470,7 @@ def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
 
     calls = []
 
-    class ClaudeExpired:
+    class Expired:
         returncode = 1
         stdout = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
         stderr = ""
@@ -478,12 +480,12 @@ def test_cmd_search_fallback_on_claude_auth_failure(monkeypatch, capsys):
         stdout = "none"
         stderr = ""
 
-    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or (CodexOK if len(calls) > 1 else ClaudeExpired)())
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: calls.append((a, kw)) or (CodexOK if len(calls) > 1 else Expired)())
 
     search.cmd_search(["topic"])
 
     assert len(calls) == 2
-    assert calls[0][0][0][:2] == ["claude", "-p"]
+    assert calls[0][0][0][:2] == [search.DEFAULT_JUDGE, "-p"]
     assert calls[1][0][0][:2] == ["codex", "exec"]
     assert "falling back" in capsys.readouterr().err
 
@@ -528,7 +530,7 @@ def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        if argv[0] == "claude":
+        if argv[0] == search.DEFAULT_JUDGE:
             raise search.subprocess.TimeoutExpired(argv, kwargs["timeout"])
         return CodexOK()
 
@@ -536,7 +538,7 @@ def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
 
     search.cmd_search(["topic"])
 
-    assert [call[0] for call in calls] == ["claude", "codex"]
+    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, "codex"]
     assert "timed out; falling back" in capsys.readouterr().err
 
 
@@ -645,7 +647,7 @@ def test_first_batch_selects_judge_for_remaining_batches(monkeypatch):
 
     calls = []
 
-    class ClaudeLimit:
+    class Limit:
         returncode = 1
         stdout = "You've hit your session limit"
         stderr = ""
@@ -657,15 +659,15 @@ def test_first_batch_selects_judge_for_remaining_batches(monkeypatch):
 
     def fake_run(argv, **kwargs):
         calls.append(argv[0])
-        return ClaudeLimit() if argv[0] == "claude" else CodexOK()
+        return Limit() if argv[0] == search.DEFAULT_JUDGE else CodexOK()
 
     monkeypatch.setattr(search.subprocess, "run", fake_run)
 
     search.cmd_search(["topic"])
 
-    # Claude is probed only by the first batch. Once codex succeeds, both
-    # remaining batches start directly with codex.
-    assert calls.count("claude") == 1
+    # The default judge is probed only by the first batch. Once codex
+    # succeeds, both remaining batches start directly with codex.
+    assert calls.count(search.DEFAULT_JUDGE) == 1
     assert calls.count("codex") == 3
 
 
@@ -872,7 +874,7 @@ def test_cmd_search_shows_both_sections_and_unioned_cache(monkeypatch, capsys, t
 
     out = capsys.readouterr().out
     assert "exact matches for 'aria2c'" in out
-    assert "semantic matches (judge: claude):" in out
+    assert "semantic matches (judge: step):" in out
     assert [row[1] for row in rendered[0][0]] == ["hit-1"]
     assert [row[1] for row in rendered[1][0]] == ["sem-1"]
     assert rendered[0][2] == 1

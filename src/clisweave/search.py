@@ -79,12 +79,19 @@ JUDGE_CMD = {
     # judge's prompt would otherwise land in the listing this search reads.
     "step": ["step", "-p", "--no-session"],
 }
-DEFAULT_JUDGE = "claude"
+# Which judge runs when the caller does not pass --judge. This is a
+# per-machine setting: it must name a judge that is actually installed here,
+# because the fallback sequence below is only entered *after* this one has
+# already failed. claude/codex/kimi are supported but absent on this box;
+# clisweave runs under step (the StepCode CLI), which is installed and
+# authenticated, so it leads.
+DEFAULT_JUDGE = "step"
 
 # Judges that accept the prompt on stdin instead of argv. Passing a long
 # prompt as a command-line argument hits OS limits (ARG_MAX) once the
 # candidate list grows into the hundreds; stdin avoids that entirely.
-JUDGE_USES_STDIN = {"claude", "codex"}
+# Verified: `step -p` reads the prompt from stdin and answers `PONG`.
+JUDGE_USES_STDIN = {"claude", "codex", "step"}
 
 # See module docstring for why candidates are chunked instead of judged in
 # one batch.
@@ -283,28 +290,36 @@ def _is_session_limit(result):
 
 
 def _is_auth_failure(result):
-    """Claude's login expired or was revoked ("Failed to authenticate. API
+    """A judge's login expired or was revoked ("Failed to authenticate. API
     Error: 401 OAuth access token has expired"). Like a session limit, it
-    makes claude unusable for the whole run -- every batch fails the same
-    way -- so it warrants the same fall-through to another judge."""
+    makes that judge unusable for the whole run -- every batch fails the
+    same way -- so it warrants the same fall-through to another judge.
+    Historically this was claude-only, but codex and kimi report expired
+    credentials in the same shape."""
     output = (result.stdout or "") + (result.stderr or "")
     lowered = output.lower()
     return "failed to authenticate" in lowered or "re-authenticate" in lowered
 
 
 def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
-    """Run the judge (falling back off claude on a session-limit hit,
-    unless the user pinned one explicitly) against one prompt -- a full
-    batch, or one chunk of one. Returns the picked local indices and the
-    judge that succeeded. Raises JudgeError if every judge in the fallback
-    sequence fails."""
-    fallback_order = [DEFAULT_JUDGE, "codex", "kimi", "step"]
+    """Run the judge (falling back off one that is unusable for the whole
+    run -- its own session limit, or an expired login -- unless the user
+    pinned one explicitly) against one prompt -- a full batch, or one chunk
+    of one. Returns the picked local indices and the judge that succeeded.
+    Raises JudgeError if every judge in the fallback sequence fails."""
+    # Ordered preference for an unpinned judge: the default first, then the
+    # rest. Deduped, because "step" is DEFAULT_JUDGE on this box and also
+    # appears in the tail list -- retrying it there would be pointless.
+    fallback_order = list(dict.fromkeys([DEFAULT_JUDGE, "codex", "kimi", "step"]))
     if judge_explicit:
         judges = [judge]
     else:
         # A prior batch may already have selected codex or kimi. Resume at
         # that point instead of retrying judges known not to be available.
         judges = fallback_order[fallback_order.index(judge):]
+    # Named in the "sign in again" hints: every judge this machine supports
+    # except the one that just failed.
+    others = ", ".join(f"--judge {j}" for j in JUDGE_CMD if j != judge) or "another --judge"
     result = None
     for judge_idx, j in enumerate(judges):
         print(f"Asking {j} to judge {label} ...", file=sys.stderr, flush=True)
@@ -325,14 +340,17 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        if j == "claude" and (_is_session_limit(result) or _is_auth_failure(result)):
-            if not judge_explicit and len(judges) > 1:
+        if _is_session_limit(result) or _is_auth_failure(result):
+            # Every judge has its own session limit and its own way of saying
+            # a login expired, and either makes it unusable for the rest of
+            # the run, so this is not claude-specific.
+            if not judge_explicit and judge_idx + 1 < len(judges):
                 print("  -> falling back to next judge", file=sys.stderr)
                 continue
             if _is_auth_failure(result):
-                print("  hint: Claude's login has expired. Run `claude` and sign in again (/login), or use --judge codex / --judge kimi.", file=sys.stderr)
+                print(f"  hint: {j}'s login has expired. Run `{j}` and sign in again, or use one of: {others}.", file=sys.stderr)
             else:
-                print("  hint: Claude is at its session limit. Retry after the reset time, or use --judge codex / --judge kimi.", file=sys.stderr)
+                print(f"  hint: {j} is at its session limit. Retry after the reset time, or use one of: {others}.", file=sys.stderr)
         raise JudgeError(result.returncode)
     raise JudgeError(result.returncode if result else 1)
 
@@ -379,7 +397,7 @@ def cmd_search(argv):
 
     topic = " ".join(topic_parts).strip()
     if not topic:
-        print("Usage: ai search <topic> [--tool claude|codex|kimi] [--judge claude|codex|kimi] [--why] [--all]", file=sys.stderr)
+        print(f"Usage: ai search <topic> [--tool {'|'.join(sessions.TOOLS)}] [--judge {'|'.join(JUDGE_CMD)}] [--why] [--all]", file=sys.stderr)
         sys.exit(1)
 
     candidates = gather_candidates(tool_filter, show_all)
