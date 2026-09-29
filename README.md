@@ -108,6 +108,8 @@ Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is u
 
 One table: the row number, the tool, how long ago the session ran, its id, the directory it belongs to, and how many turns it holds. `▸` (or `>` on a console that cannot draw it) marks the rows whose directory is the one you are standing in — the question you usually have when you type `ai` inside a project.
 
+Under each row, dim, is where that session left off — the last thing anyone actually said in it. A title says where a conversation *started* ("fix the nfc lock"); the line under it says where it got to, which is the difference between a table and an answer to "where was I?". A trailing system reminder or a pasted log is skipped for the real last words, and a one-turn session shows nothing under its row rather than repeating its title.
+
 The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CLISWEAVE_COLOR=never`; `CLISWEAVE_COLOR=always` forces it on (useful for `ai | less -R`).
 
 On a narrow terminal the directory column shrinks first and the turns column is dropped before the title loses its room. Columns are measured in display width rather than code points, so a title in Chinese keeps the table lined up — and a turn count comes from the user messages each tool records (claude's tool results are not turns).

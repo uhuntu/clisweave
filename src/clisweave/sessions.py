@@ -2487,8 +2487,15 @@ def handoff_source(path, tool, limit=60):
 
 
 def _transcript_path(r):
+    # A light record's own transcript when it has one -- claude and step
+    # always did, and codex records carry the rollout file they were read
+    # from, which saves rebuilding the path index once per row of a listing.
+    # A record without one (the synthesized codex record _find_record builds)
+    # still resolves through the index.
+    if r.get("path"):
+        return r["path"]
     if r["tool"] in ("claude", "step"):
-        return r.get("path")
+        return None
     if r["tool"] == "codex":
         return codex_rollout_path(r["id"])
     return os.path.join(r["dir"], "agents", "main", "wire.jsonl") if r.get("dir") else None
@@ -2592,16 +2599,21 @@ MARK_WIDTH = 2
 MARKER_CHOICES = ("▸", "»", ">")
 # What a clipped cell ends (or starts) with, in order of preference.
 ELLIPSIS_CHOICES = ("…", "..")
+# What the "where it left off" line hangs from its row with.
+LAST_PREFIX_CHOICES = ("└", "`")
+# A last message is a preview, not a transcript: one line, same budget as a
+# title.
+LAST_MESSAGE_MAX = 70
 
 
 def _encodable(choices):
     """The first of `choices` the output stream's encoding can represent.
 
-    The marker and the clip glyph are the two characters the table draws
-    with, and a legacy code page has no "▸" (nor "»") -- printing one there
-    substitutes "?" and reads as a bug rather than a marker. The ASCII
-    stand-ins say the same thing, and the width math measures whichever one
-    is chosen."""
+    The marker, the clip glyph and the "where it left off" connector are
+    what the table draws with, and a legacy code page has no "▸" (nor "»")
+    -- printing one there substitutes "?" and reads as a bug rather than a
+    marker. The ASCII stand-ins say the same thing, and the width math
+    measures whichever one is chosen."""
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     for glyph in choices:
         try:
@@ -2716,6 +2728,107 @@ def session_turns(record):
     return turns or None
 
 
+def _tail_lines(path, window=16384):
+    """The last `window` bytes of a transcript, as complete lines, newest
+    first.
+
+    Reads from the end because these files grow without bound and only the
+    last message matters here. A line cut by the seek -- or by a tool that
+    is still writing to the file -- fails to parse and the caller keeps
+    walking backwards, which is the same tolerance open_text gives the
+    forward readers."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.fstat(fh.fileno()).st_size - window))
+            chunk = fh.read()
+    except OSError:
+        return []
+    return [line for line in reversed(chunk.split(b"\n")) if line.strip()]
+
+
+def _last_text_from_record(tool, d):
+    """The text a transcript record carries, or None when it is not
+    something anyone said: a tool call, a tool result, a model change.
+
+    Each tool's shape is its own, but the question is the one every reader
+    in this module answers."""
+    if tool == "step":
+        if d.get("type") != "message":
+            return None
+        message = dict_field(d, "message")
+        if message.get("role") not in ("user", "assistant"):
+            return None  # toolResult: what a call returned, not what was said
+        return _step_message_text(message)
+    if tool == "claude":
+        if d.get("type") not in ("user", "assistant"):
+            return None
+        # a tool result is a user record whose content holds no text block,
+        # so this returns None for one without a special case
+        return extract_text_from_content(dict_field(d, "message").get("content"))
+    if tool == "codex":
+        if d.get("type") != "response_item":
+            return None
+        payload = dict_field(d, "payload")
+        if payload.get("type") != "message":
+            return None
+        return extract_text_from_content(payload.get("content"),
+                                         ("output_text", "input_text", "text"))
+    # kimi: the user's turn.prompt, or the assistant's content.part
+    if d.get("type") == "turn.prompt":
+        for block in list_field(d, "input"):
+            if isinstance(block, dict) and block.get("type") == "text":
+                return block_text(block)
+        return None
+    if d.get("type") == "context.append_loop_event":
+        event = dict_field(d, "event")
+        part = dict_field(event, "part")
+        if event.get("type") == "content.part" and part.get("type") in ("text", "think"):
+            return next((v for v in (part.get("text"), part.get("think"))
+                         if isinstance(v, str)), None)
+    return None
+
+
+def session_last_message(record):
+    """What the session ended on: the last thing anyone actually said.
+
+    "Where was I?" is the question a listing answers, and the title -- the
+    first genuine prompt -- only says where a session *started*. A 40-turn
+    debugging run titled "fix the nfc lock" says nothing about where it got
+    to; its last message does. Only the tail of the file is read, because
+    that is all this needs.
+
+    Skips what nobody said, the way the title readers do: an injected
+    reminder, a pasted transcript, a captionless screenshot. A trailing
+    system reminder is common enough (a scheduled task firing at the end of
+    a session) that walking past it is the normal case, not an edge one."""
+    path = _transcript_path(record)
+    if not path:
+        return None
+    for raw in _tail_lines(path):
+        try:
+            d = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        text = _last_text_from_record(record.get("tool"), d)
+        if not text or not text.strip():
+            continue
+        if is_image_only(text) or _is_injected_or_pasted(text):
+            continue
+        return " ".join(text.split())[:LAST_MESSAGE_MAX]
+    return None
+
+
+def _same_saying(a, b):
+    """True when two texts are the same saying, one of them clipped.
+
+    A one-turn session's last message *is* its title, and printing both
+    says everything twice. The title is cut at 70 characters, so the last
+    message can be the longer of the two."""
+    return a == b or b.startswith(a) or a.startswith(b)
+
+
 def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False,
                 sources=None):
     """rows: list of resolve_row()-shaped tuples, already in display order.
@@ -2763,6 +2876,7 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False,
     w_cwd = min(24 if inline_why else 40, max(3, max(_display_width(r[4]) for r in rows)))
 
     show_turns = bool(sources) and not inline_why
+    show_last = show_turns
     if show_turns:
         # Fit the plumbing before the title: the cwd is the most compressible
         # (a path's tail still names the project), and if even a floor-width
@@ -2803,6 +2917,13 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False,
         header += f"{'':<{max(0, w_title - 5)}}  WHY"
     print(color.paint(header, color.BOLD))
     indent = " " * (w_num + 2)
+    # The "where it left off" line hangs off the row number rather than under
+    # the title: the title column starts most of the way across the table, and
+    # a preview with 27 characters to live in is not a preview. This is where
+    # `--why` puts its own continuation line, for the same reason.
+    last_prefix = _encodable(LAST_PREFIX_CHOICES)
+    last_room = max(10, shutil.get_terminal_size((100, 24)).columns
+                    - len(indent) - _display_width(last_prefix) - 1)
     for n, (tool, full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
         mine = marks[n - start]
         cwd_disp = _clip_tail(cwd_show, w_cwd)
@@ -2822,6 +2943,11 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False,
         else:
             line += title
         print(line.rstrip())
+        if show_last:
+            last = session_last_message(sources[full_id]) if full_id in sources else None
+            if last and not _same_saying(last, title):
+                print(color.paint(f"{indent}{last_prefix} {_clip(last, last_room)}",
+                                  color.DIM))
         why = notes.get((tool, full_id))
         if full_notes and why:
             print(f"{indent}why: {why}")

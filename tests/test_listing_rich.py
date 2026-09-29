@@ -14,6 +14,7 @@ themselves write, and the turn counter matches those bytes as substrings.
 import io
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -295,7 +296,8 @@ def test_cmd_list_counts_turns_for_the_rows_it_prints(monkeypatch, tmp_path, cap
     lines = capsys.readouterr().out.splitlines()
     # header, then one row per session, newest first
     assert lines[0].split()[-2:] == ["TURNS", "TITLE"]
-    turns_of = {line.split()[-1]: line.split()[-2] for line in lines[1:]}
+    row_lines = [l for l in lines[1:] if re.match(r"^\s*\d+\s", l)]
+    turns_of = {line.split()[-1]: line.split()[-2] for line in row_lines}
     assert turns_of == {"alpha": "2", "gamma": "1", "Gamma": "3"}  # tool result not counted
 
 
@@ -354,3 +356,123 @@ def test_render_rows_is_plain_when_color_is_off(monkeypatch):
     sessions.render_rows(_rows(), write_cache=False)
 
     assert "\x1b" not in _printed(stream)
+
+
+# ---------- where each session left off ----------
+
+def test_the_last_line_shows_where_the_session_ended(monkeypatch, tmp_path):
+    """The title says where a session started; this says where it got to."""
+    _plain(monkeypatch)
+    path = write_step(tmp_path, "s1", [{"type": "session", "id": "s1"},
+                                       step_user("fix the nfc lock"),
+                                       {"type": "message", "message": {"role": "assistant",
+                                                                       "content": "Patched the HAL and rebuilt."}}])
+    stream = _capture(monkeypatch)
+
+    sessions.render_rows([("step", "id-1", "1h ago", "id-1", "/work", "fix the nfc lock")],
+                         write_cache=False, sources={"id-1": {"tool": "step", "path": str(path)}})
+
+    lines = _printed(stream).splitlines()
+    assert len(lines) == 3  # header + row + the last line
+    assert lines[2].strip().startswith("└")
+    assert "Patched the HAL" in lines[2]
+
+
+def test_a_one_turn_session_does_not_repeat_its_title(monkeypatch, tmp_path):
+    _plain(monkeypatch)
+    path = write_step(tmp_path, "s1", [{"type": "session", "id": "s1"},
+                                       step_user("just a question")])
+    stream = _capture(monkeypatch)
+
+    sessions.render_rows([("step", "id-1", "1h ago", "id-1", "/work", "just a question")],
+                         write_cache=False, sources={"id-1": {"tool": "step", "path": str(path)}})
+
+    assert len(_printed(stream).splitlines()) == 2  # header + row, nothing under it
+
+
+def test_a_trailing_reminder_is_skipped_for_the_real_last_words(monkeypatch, tmp_path):
+    """A scheduled task fires its reminder after the work is done; showing it
+    as "where the session left off" would name the reminder, not the work."""
+    _plain(monkeypatch)
+    path = write_step(tmp_path, "s1", [
+        {"type": "session", "id": "s1"},
+        step_user("do the thing"),
+        {"type": "message", "message": {"role": "assistant", "content": "All done."}},
+        {"type": "message", "message": {"role": "user",
+                                        "content": "<system-reminder>scheduled task fired</system-reminder>"}},
+    ])
+    stream = _capture(monkeypatch)
+
+    sessions.render_rows([("step", "id-1", "1h ago", "id-1", "/work", "do the thing")],
+                         write_cache=False, sources={"id-1": {"tool": "step", "path": str(path)}})
+
+    assert "All done." in _printed(stream).splitlines()[2]
+
+
+def test_the_last_line_is_absent_without_sources(monkeypatch, tmp_path):
+    """Search rows carry the judge's WHY instead -- there is no room for both."""
+    _plain(monkeypatch)
+    path = write_step(tmp_path, "s1", [{"type": "session", "id": "s1"}, step_user("q"),
+                                       {"type": "message", "message": {"role": "assistant",
+                                                                       "content": "an answer"}}])
+    stream = _capture(monkeypatch)
+
+    sessions.render_rows([("step", "id-1", "1h ago", "id-1", "/work", "q")], write_cache=False)
+
+    assert len(_printed(stream).splitlines()) == 2
+
+
+def test_the_last_message_comes_from_each_tools_own_shape(monkeypatch, tmp_path):
+    claude = write_claude(tmp_path, "c1", [
+        claude_user("one"),
+        {"type": "assistant", "message": {"role": "assistant",
+                                          "content": [{"type": "text", "text": "claude's last word"}]}},
+    ])
+    step = write_step(tmp_path, "s1", [
+        {"type": "session", "id": "s1"},
+        step_user("one"),
+        {"type": "message", "message": {"role": "assistant", "content": "step's last word"}},
+        {"type": "message", "message": {"role": "toolResult", "content": "ignored"}},
+    ])
+    codex = write_codex(tmp_path, "x1", [
+        codex_user("one"),
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                              "content": [{"type": "output_text",
+                                                           "text": "codex's last word"}]}},
+        {"type": "response_item", "payload": {"type": "function_call", "name": "shell",
+                                              "arguments": "{}"}},
+    ])
+    write_kimi(tmp_path, "k1", [
+        kimi_prompt("one"),
+        kimi_reply("kimi's last word"),
+    ])
+
+    assert sessions.session_last_message({"tool": "claude", "path": str(claude)}) == "claude's last word"
+    assert sessions.session_last_message({"tool": "step", "path": str(step)}) == "step's last word"
+    assert sessions.session_last_message({"tool": "codex", "path": str(codex)}) == "codex's last word"
+    assert sessions.session_last_message(
+        {"tool": "kimi", "dir": str(tmp_path / ".kimi-code" / "k1")}) == "kimi's last word"
+
+
+def test_a_codex_last_message_resolves_through_the_path_index(monkeypatch, tmp_path):
+    """The listing hands the renderer a light record, and a codex record's
+    transcript is found the way the rest of the module finds it."""
+    sid = "019ffdbe-1234-7abc-8def-0000000000aa"
+    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
+    sessions._codex_path_index = None
+    try:
+        path = write_codex(tmp_path, sid, [
+            {"type": "session_meta", "payload": {"id": sid, "cwd": "/work"}},
+            codex_user("one"),
+            {"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                  "content": [{"type": "output_text",
+                                                               "text": "found through the index"}]}},
+        ])
+        assert sessions.session_last_message({"tool": "codex", "id": sid}) == "found through the index"
+    finally:
+        sessions._codex_path_index = None
+
+
+def test_a_missing_transcript_has_no_last_message(tmp_path):
+    assert sessions.session_last_message({"tool": "step", "path": str(tmp_path / "gone.jsonl")}) is None
+    assert sessions.session_last_message({"tool": "kimi"}) is None
