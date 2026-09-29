@@ -1,5 +1,5 @@
 """ai update - update clisweave itself, and optionally the underlying
-claude/codex/kimi CLIs, which each ship their own self-update command."""
+claude/codex/kimi/step CLIs, which each ship their own self-update command."""
 import os
 import shutil
 import subprocess
@@ -13,7 +13,9 @@ TOOL_UPDATE_CMD = {
     # TTY the selection aborts and the whole update errors out ("This operation
     # was aborted"). Confirmed live 2026-09-24.
     "kimi": ["kimi", "update", "--yes"],
-    # step's updater takes no subcommand and answers in one shot
+    # step's updater answers in one shot -- no picker to dismiss the way
+    # kimi's does, and no argument needed ("Usage: step update [version]",
+    # checked against the installed binary).
     "step": ["step", "update"],
 }
 

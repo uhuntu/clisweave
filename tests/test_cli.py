@@ -3,7 +3,7 @@ import re
 
 import pytest
 
-from clisweave import cli
+from clisweave import cli, search
 from clisweave.cli import UsageError, build_command
 
 
@@ -99,6 +99,22 @@ def test_the_unknown_tool_error_names_every_command_it_dispatches():
     message = str(exc_info.value)
     for name in sorted(dispatched | set(cli.TOOLS)):
         assert name in message, name
+
+
+def test_help_lists_every_tool_and_every_judge():
+    """`ai --help` printed [--judge claude|codex|kimi] for the two commits
+    after step became a judge, and "asks claude" after claude stopped being
+    the default -- a literal string, describing lists that live in TOOLS and
+    JUDGE_CMD. USAGE is built from both now; this holds the printed line to
+    them the way the test above holds the unknown-tool message to main()."""
+    search_line = next(line for line in cli.USAGE.splitlines() if "ai search" in line)
+    tools_shown = re.search(r"\[--tool ([^\]]+)\]", search_line)
+    judges_shown = re.search(r"\[--judge ([^\]]+)\]", search_line)
+    assert tools_shown and judges_shown, search_line
+    assert tools_shown.group(1).split("|") == list(cli.TOOLS)
+    assert judges_shown.group(1).split("|") == list(search.JUDGE_CMD)
+    # the example names the judge the command will actually ask
+    assert f"asks {search.DEFAULT_JUDGE} (the default judge)" in cli.USAGE
 
 
 def test_double_dash_passes_rest_through_untouched():

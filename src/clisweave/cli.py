@@ -1,17 +1,26 @@
-"""ai - unified wrapper for claude / codex / kimi CLIs.
-Normalizes a handful of common flags across the three tools and passes
+"""ai - unified wrapper for the claude / codex / kimi / step CLIs.
+Normalizes a handful of common flags across the four tools and passes
 everything else straight through.
 """
 import sys
 
 from . import __version__, search, sessions, update
 
-USAGE = """Usage: ai <claude|codex|kimi|step> [common-options] [prompt] [-- extra native args]
+TOOLS = ("claude", "codex", "kimi", "step")
+
+# USAGE is an f-string built from TOOLS, search.JUDGE_CMD and
+# search.DEFAULT_JUDGE for the same reason SUBCOMMANDS exists below: the
+# search line hardcoded [--judge claude|codex|kimi] and so advertised a judge
+# list that was wrong for the two commits after step joined it, the yolo table
+# and the examples named three tools when there were four, and "asks claude"
+# kept naming a judge that was no longer the default. Nothing here spells out
+# something the code can say.
+USAGE = f"""Usage: ai <{'|'.join(TOOLS)}> [common-options] [prompt] [-- extra native args]
        ai sessions [--tool T] [--limit N|all] [--cwd] [--all]
        ai full [--tool T] [--cwd] [--all]
-       ai search <topic> [--tool T] [--judge claude|codex|kimi]
-       ai resume <claude|codex|kimi|step|N> [session-id-or-prefix] [--cwd <dir>]
-       ai <N> <claude|codex|kimi|step> [native-options]
+       ai search <topic> [--tool {'|'.join(TOOLS)}] [--judge {'|'.join(search.JUDGE_CMD)}] [--why] [--all]
+       ai resume <{'|'.join(TOOLS)}|N> [session-id-or-prefix] [--cwd <dir>]
+       ai <N> <{'|'.join(TOOLS)}> [native-options]
        ai update [tools|all]
        ai stats [--tool T]
 
@@ -30,11 +39,13 @@ Per-tool --yolo mapping:
   claude  -> --dangerously-skip-permissions
   codex   -> --approve-for-me   (auto-approve, still sandboxed)
   kimi    -> -y/--yolo
+  step    -> --approval-mode auto + --non-interactive-approval allow
 
 Examples:
   ai claude -p "summarize this repo"
   ai codex -p -m o3 "fix the failing test"
   ai kimi -c
+  ai step -p "summarize this repo"
   ai claude -- --agent reviewer "look at this diff"
   ai sessions --limit 10
   ai sessions --limit all   # same as `ai full`
@@ -44,13 +55,13 @@ Examples:
   ai resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
   ai 3 codex          # continue row 3 in a new Codex session with context
   ai update           # update clisweave itself
-  ai update tools     # update claude, codex, and kimi (whichever are installed)
+  ai update tools     # update claude, codex, kimi, and step (whichever are installed)
   ai update all       # both of the above
-  ai search "the nfc frequency lock issue"   # asks claude to find relevant sessions
+  ai search "the nfc frequency lock issue"   # asks {search.DEFAULT_JUDGE} (the default judge)
+  ai search "katago" --judge codex   # judge with a different tool
+  ai search "katago" --why           # each hit's reason, in full
   ai stats            # session counts per tool, oldest/newest, top directories
 """
-
-TOOLS = ("claude", "codex", "kimi", "step")
 
 # Everything `ai <x>` accepts that is not a tool. The unknown-tool error names
 # this list, and the test asserts it matches what main() actually dispatches,

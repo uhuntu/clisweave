@@ -71,7 +71,7 @@ Equivalent manual commands for updating clisweave itself, if you'd rather:
 ## Usage
 
 ```bash
-ai                          # recent sessions across all three tools (same as `ai sessions`)
+ai                          # recent sessions across all four tools (same as `ai sessions`)
 ai claude -p "prompt"       # -> claude -p "prompt"
 ai codex -p -m o3 "prompt"  # -> codex exec -m o3 "prompt"
 ai kimi -c                  # -> kimi -c
@@ -100,7 +100,7 @@ ai stats                    # session counts per tool, oldest/newest, top direct
 ai stats --tool claude      # stats for one tool only
 ```
 
-Sessions a tool started for itself are left out of `ai sessions` and `ai search`: Codex's command-approval reviews (one per command it asks you to approve) and `ai search`'s own judge runs. Neither is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`ai resume codex <id>`), and `ai sessions --all` lists them anyway.
+Sessions a tool started for itself are left out of `ai sessions` and `ai search`: Codex's command-approval reviews (one per command it asks you to approve), step's own `subagent-…` sessions, and `ai search`'s own judge runs. None of them is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`ai resume codex <id>`), and `ai sessions --all` lists them anyway.
 
 Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
 
@@ -114,7 +114,7 @@ One exception: kimi cannot open an interactive session with an initial prompt (a
 
 1. **Exact pre-pass** — a case-insensitive scan of conversation text, tool calls, results, and kimi background-task output logs. It ignores session metadata and injected instructions. Short alphabetic queries such as `cra` match whole words, so they do not match `craft` or `crash`; longer queries retain substring matching. Results print under `exact matches` with zero LLM cost.
 
-2. **Semantic pass** — the LLM judge. Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)", and the relevant sessions may never use your exact words. So each candidate's tool, cwd, title, and a short content snippet go into one prompt, and an LLM (`claude -p` by default; `--judge step` works too) picks out which numbers are relevant. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi` account bills them) every time you run it. Results print under `semantic matches`.
+2. **Semantic pass** — the LLM judge. Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)", and the relevant sessions may never use your exact words. So each candidate's tool, cwd, title, and a short content snippet go into one prompt, and an LLM (`step -p` by default — which judge leads is a per-machine setting; `--judge claude`, `--judge codex` or `--judge kimi` pick another) picks out the relevant ones. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi`/`step` account bills them) every time you run it, and if a judge runs out of session limit or its login expires mid-search, the remaining judges are tried in order. Results print under `semantic matches`.
 
 The exact pass exists because the semantic pass reasons over small *sampled* snippets, and a term that only appears in unsampled messages, tool calls, or past the snippet scan cap is invisible to the judge — a real `aria2c` search missed 4 sessions that grepping found immediately. The two passes union (a session listed as exact is not repeated under semantic), and both count for `ai resume <N>`.
 
@@ -153,7 +153,7 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 
 Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing. Resuming a codex thread appends a *new* rollout file instead of extending the one it already had, so a single session id can own several; only the newest is read — for the row's timestamp, title, cwd, snippet, and any handoff. A codex fork or subagent thread has no prompt of its own, so it is named after the thread it forked from (`(fork) …`), the way a handoff is named after the session it continues. kimi names its own sessions too, and that name is used when its log holds no text prompt to read — but only when it is a real name, not the `[image]`/`New Session` placeholder it uses until it has one. A message relayed by a bridge (openclaw) behind its `Conversation info: ⟦openclaw:ctx⟧` header is read as what was said after the header, not as the header itself.
 
-`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all three tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
+`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all four tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
 Pass `--cwd <dir>` to send it somewhere else instead, e.g. `ai resume 2 --cwd /path/to/other-project`. claude, codex, and kimi all tie a session's transcript permanently to whichever directory it first ran in — confirmed by testing `claude --resume` from an unrelated directory: the resumed turn was appended to the *original* directory's log, nothing was written under the new one — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `ai resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `ai <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
 
