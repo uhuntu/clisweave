@@ -526,16 +526,18 @@ def test_cmd_search_explicit_claude_auth_failure_shows_login_hint(monkeypatch, c
 def test_cmd_search_fallback_on_rate_limited_judge(monkeypatch, capsys):
     """Regression test: a judge's backend refusing for concurrency
     ("429: {"message":"concurrency reached, current: 6, limit:
-    5","type":"rate_limited"}") is that judge's whole run, and the next
-    judge runs on a different backend with its own budget -- so it falls
-    back instead of dying. Real: the 50-session-batch search lost 5 of 13
-    batches to exactly this before the fallback understood 429s."""
+    5","type":"rate_limited"}") is retried on the same judge a couple of
+    times (it is a burst, not a fault), then falls back -- the next judge
+    runs on a different backend with its own budget. Real: the
+    50-session-batch search lost 5 of 13 batches to exactly this before
+    the fallback understood 429s."""
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
     ])
     monkeypatch.setattr(sessions, "resolve_row", lambda r: (
         r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
     ))
+    monkeypatch.setattr(search.time, "sleep", lambda s: None)
 
     calls = []
 
@@ -559,9 +561,51 @@ def test_cmd_search_fallback_on_rate_limited_judge(monkeypatch, capsys):
 
     search.cmd_search(["topic"])
 
-    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, "codex"]
+    # both attempts at the default judge, then the fallback
+    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, search.DEFAULT_JUDGE, search.DEFAULT_JUDGE, "codex"]
     err = capsys.readouterr().err
+    assert "rate limited; retrying" in err
     assert "falling back to next judge" in err
+
+
+def test_cmd_search_rate_limit_retry_succeeds_on_same_judge(monkeypatch, capsys):
+    """The retry earns its keep by keeping the batch on the preferred
+    judge: when the burst clears, the same judge answers and no fallback
+    is spent. Real: the openclaw search lost batches 2/13, 3/13, 5/13 to
+    bursts that would likely have passed seconds later."""
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
+    ))
+    monkeypatch.setattr(search.time, "sleep", lambda s: None)
+
+    calls = []
+
+    class RateLimited:
+        returncode = 1
+        stdout = ""
+        stderr = '429: {"message":"concurrency reached, current: 6, limit: 5","type":"rate_limited"}'
+
+    class StepOK:
+        returncode = 0
+        stdout = "1"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        # first call rate limited, the retry after the burst clears it
+        return RateLimited() if len(calls) == 1 else StepOK()
+
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["topic"])
+
+    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, search.DEFAULT_JUDGE]
+    err = capsys.readouterr().err
+    assert "rate limited; retrying" in err
+    assert "falling back" not in err  # no fallback spent
 
 
 def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):

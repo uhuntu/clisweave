@@ -35,6 +35,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 
 from . import sessions
 
@@ -126,6 +127,16 @@ JUDGE_TIMEOUT_SECONDS = 240
 # batches to HTTP 429 "concurrency reached, current: 6, limit: 5". One
 # slot of headroom stays for the caller's own traffic.
 MAX_CONCURRENT_BATCHES = 4
+
+# A 429 from the backend ("concurrency reached, current: 6, limit: 5") is
+# a burst, not a fault: it clears once the other traffic on the shared
+# account drains, which takes seconds. Batches run in parallel, so bursts
+# are the norm -- retry the *same* judge after a short pause before
+# spending a fallback, because the retry keeps the batch on the preferred
+# judge with its live-repo verification, and the parallel drain makes the
+# retry likely to succeed. Two delays (quick drain, then slower); if the
+# limit persists, the fallback chain handles it exactly as before.
+RATE_LIMIT_RETRY_DELAYS = (5, 20)
 
 # The judge ranks its hits strongest-first, so the tail is the weakest of them
 # -- mostly sessions that share a field with the topic rather than being about
@@ -346,7 +357,8 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     """Run the judge (falling back off one that is unusable for the whole
     run -- its own session limit, or an expired login -- unless the user
     pinned one explicitly) against one prompt -- a full batch, or one chunk
-    of one. Returns the picked local indices and the judge that succeeded.
+    of one. A transient rate limit is retried on the same judge first.
+    Returns the picked local indices and the judge that succeeded.
     Raises JudgeError if every judge in the fallback sequence fails."""
     # Ordered preference for an unpinned judge: the default first, then the
     # rest. Deduped, because "step" is DEFAULT_JUDGE on this box and also
@@ -381,6 +393,18 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
+        if _is_rate_limited(result):
+            # A burst, not a fault -- the other judges' traffic drains in
+            # seconds, so retry this same judge before spending a fallback.
+            # Works for a pinned judge too: the judge the user asked for is
+            # still the judge they want if it can get through.
+            for delay in RATE_LIMIT_RETRY_DELAYS:
+                print(f"  -> rate limited; retrying {j} in {delay}s", file=sys.stderr, flush=True)
+                time.sleep(delay)
+                result = _call_judge(j, prompt)
+                if result.returncode == 0:
+                    return parse_numbered_reasons(result.stdout or "", n), j
+                print(f"ai search: {j} exited with an error again ({label})", file=sys.stderr)
         if _is_session_limit(result) or _is_auth_failure(result) or _is_rate_limited(result):
             # Every judge has its own session limit and its own way of saying
             # a login expired, and either makes it unusable for the rest of
