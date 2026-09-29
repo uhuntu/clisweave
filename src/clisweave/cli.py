@@ -35,6 +35,11 @@ Common options (translated per-tool, all optional):
 Anything after a literal `--`, or any flag this wrapper doesn't recognize,
 is passed through unchanged to the underlying CLI.
 
+The listing (`ai`, `ai sessions`) marks the rows belonging to the current
+directory and shows each session's turn count. Color is used only when the
+output is a terminal: NO_COLOR, TERM=dumb and CLISWEAVE_COLOR=never disable
+it, CLISWEAVE_COLOR=always forces it.
+
 Per-tool --yolo mapping:
   claude  -> --dangerously-skip-permissions
   codex   -> --approve-for-me   (auto-approve, still sandboxed)

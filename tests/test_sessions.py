@@ -74,11 +74,14 @@ def scan_rollouts_newest_first(monkeypatch, paths):
 @pytest.mark.parametrize(
     "delta,expected",
     [
-        (0, "0s ago"),
-        (30, "30s ago"),
+        (0, "just now"),
+        (30, "just now"),
+        (59, "just now"),
         (90, "1m ago"),
         (3661, "1h ago"),
         (90000, "1d ago"),
+        (29 * 86400, "29d ago"),
+        (400 * 86400, "13mo ago"),
     ],
 )
 def test_relative_time(monkeypatch, delta, expected):

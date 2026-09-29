@@ -104,6 +104,14 @@ Sessions a tool started for itself are left out of `ai sessions` and `ai search`
 
 Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
 
+### What the listing shows
+
+One table: the row number, the tool, how long ago the session ran, its id, the directory it belongs to, and how many turns it holds. `▸` (or `>` on a console that cannot draw it) marks the rows whose directory is the one you are standing in — the question you usually have when you type `ai` inside a project.
+
+The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CLISWEAVE_COLOR=never`; `CLISWEAVE_COLOR=always` forces it on (useful for `ai | less -R`).
+
+On a narrow terminal the directory column shrinks first and the turns column is dropped before the title loses its room. Columns are measured in display width rather than code points, so a title in Chinese keeps the table lined up — and a turn count comes from the user messages each tool records (claude's tool results are not turns).
+
 To switch agents, put the target tool after the row number: `ai 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
 
 One exception: kimi cannot open an interactive session with an initial prompt (a bare prompt parses as a subcommand name), so a handoff to it runs the seed as a one-shot `kimi -p` and then automatically resumes the session that run persisted (`kimi -S <id>`), dropping you into the interactive continuation with the summary already in its history. If the seed run fails, nothing is resumed — the error is reported, and you pick up with `kimi -c`.

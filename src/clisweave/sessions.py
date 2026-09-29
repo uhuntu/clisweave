@@ -12,6 +12,9 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
+
+from . import color
 
 HOME = os.path.expanduser("~")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
@@ -819,7 +822,7 @@ def codex_light_records():
         except OSError:
             continue
         meta = _codex_session_meta(path)
-        records.append({"tool": "codex", "id": sid, "ts": mtime,
+        records.append({"tool": "codex", "id": sid, "ts": mtime, "path": path,
                         "title": thread_names.get(sid),
                         "cwd": dict_field(meta, "payload").get("cwd") if meta else None})
     return records
@@ -2143,18 +2146,25 @@ def step_snippet(path, max_messages=12, max_chars=800):
 # ---------- shared ----------
 
 def relative_time(ts):
+    """How long ago, in the words a person would use.
+
+    "13s ago" is a stopwatch reading, not an answer to "when was this?" --
+    under a minute it is always "just now", and past a month "304d ago"
+    stops meaning anything (the listing's own oldest row read that way)."""
     if not ts:
         return "?"
     delta = time.time() - ts
     if delta < 0:
         delta = 0
     if delta < 60:
-        return f"{int(delta)}s ago"
+        return "just now"
     if delta < 3600:
         return f"{int(delta / 60)}m ago"
     if delta < 86400:
         return f"{int(delta / 3600)}h ago"
-    return f"{int(delta / 86400)}d ago"
+    if delta < 30 * 86400:
+        return f"{int(delta / 86400)}d ago"
+    return f"{int(delta / (30 * 86400))}mo ago"
 
 
 # A Windows-written absolute path: drive letter + separator, or a UNC share.
@@ -2255,14 +2265,18 @@ def cmd_list(args):
     # than after slicing: they shouldn't eat slots out of the --limit the
     # user asked for. `--all` brings them back.
     rows = []
+    sources = {}
     for r in light:
         row = resolve_row(r)
         if not show_all and is_tool_started_row(row):
             continue
         rows.append(row)
+        # The light record rides along so the renderer can count turns for
+        # the rows it actually prints (see render_rows' sources).
+        sources[row[1]] = r
         if limit is not None and len(rows) >= limit:
             break
-    render_rows(rows)
+    render_rows(rows, sources=sources)
 
 
 def cmd_stats(args):
@@ -2566,13 +2580,144 @@ WHY_MAX_WIDTH = 50
 WHY_MIN_WIDTH = 12
 TITLE_MIN_WIDTH = 12
 TITLE_WITH_WHY_MAX_WIDTH = 44
+# The turns column is fixed-width: its values are read while the rows print
+# (see session_turns), so the header cannot wait to measure them.
+TURNS_WIDTH = 5
+CWD_MIN_WIDTH = 8
+# Room for the "▸ " that marks a row belonging to the current directory.
+MARK_WIDTH = 2
+# ...but a legacy code page (GBK, Shift JIS) has no such glyph -- neither
+# does it have "»" -- and printing one there substitutes "?" and looks like
+# a bug. The first marker the output encoding can actually encode wins.
+MARKER_CHOICES = ("▸", "»", ">")
+# What a clipped cell ends (or starts) with, in order of preference.
+ELLIPSIS_CHOICES = ("…", "..")
+
+
+def _encodable(choices):
+    """The first of `choices` the output stream's encoding can represent.
+
+    The marker and the clip glyph are the two characters the table draws
+    with, and a legacy code page has no "▸" (nor "»") -- printing one there
+    substitutes "?" and reads as a bug rather than a marker. The ASCII
+    stand-ins say the same thing, and the width math measures whichever one
+    is chosen."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    for glyph in choices:
+        try:
+            glyph.encode(encoding)
+            return glyph
+        except (UnicodeEncodeError, LookupError):
+            continue
+    return choices[-1]
+
+
+def _row_marker():
+    return _encodable(MARKER_CHOICES)
+
+
+def _char_width(ch):
+    """Columns a character occupies: wide (CJK) is two, combining is zero."""
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def _display_width(text):
+    return sum(_char_width(c) for c in text)
+
+
+def _pad(text, width):
+    return text + " " * max(0, width - _display_width(text))
 
 
 def _clip(text, width):
-    return text if len(text) <= width else text[:width - 1] + "…"
+    """Clip to `width` columns, ending in an ellipsis.
+
+    len() counts code points, so a title in Chinese -- or with an emoji --
+    measured narrower than it printed: the row ran past its column and
+    pushed every field after it out of line, and the ellipsis landed on the
+    second half of a wide character. Measuring columns fixes both."""
+    if _display_width(text) <= width:
+        return text
+    ellipsis = _encodable(ELLIPSIS_CHOICES)
+    budget = width - _display_width(ellipsis)
+    out = []
+    used = 0
+    for ch in text:
+        w = _char_width(ch)
+        if used + w > budget:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out) + ellipsis
 
 
-def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
+def _clip_tail(text, width):
+    """Clip a path from the left instead: the tail names the project, while
+    the head is the home directory you are already standing in."""
+    if _display_width(text) <= width:
+        return text
+    ellipsis = _encodable(ELLIPSIS_CHOICES)
+    budget = width - _display_width(ellipsis)
+    keep = []
+    used = 0
+    for ch in reversed(text):
+        w = _char_width(ch)
+        if used + w > budget:
+            break
+        keep.append(ch)
+        used += w
+    return ellipsis + "".join(reversed(keep))
+
+
+def session_turns(record):
+    """How many user turns a session holds, or None when it can't be counted.
+
+    A listing where every row says the same thing is one you stop reading:
+    a three-turn question and a 200-turn epic looked identical. Counted with
+    substring matching over raw lines -- no json.loads per record -- because
+    this runs for every row printed, and a full scan of a 2 MB store measures
+    39 ms.
+
+    What counts as a turn is what each tool records as the user speaking:
+      claude  a "type":"user" record -- but not a tool result, which claude
+              also stores as a user record
+      codex   a response_item whose payload carries "role":"user"
+      kimi    a "turn.prompt" record in the wire log
+      step    a message record with "role":"user"
+    Whole lines rather than occurrences, so a transcript pasted into a
+    message is not counted twice; a message that merely quotes one of these
+    strings is the price of not parsing, and it is a rare one. Zero matches
+    reads as None rather than 0: a store that writes its JSON with spaces
+    after the colons would otherwise show every session as turn-free."""
+    tool = record.get("tool")
+    if tool == "kimi":
+        path = os.path.join(record.get("dir") or "", "agents", "main", "wire.jsonl")
+        marker, exclude = b'"turn.prompt"', None
+    else:
+        path = record.get("path")
+        if tool == "claude":
+            marker, exclude = b'"type":"user"', b'"tool_result"'
+        elif tool in ("codex", "step"):
+            marker, exclude = b'"role":"user"', None
+        else:
+            return None
+    if not path:
+        return None
+    turns = 0
+    try:
+        with open(path, "rb") as fh:
+            for line in fh:
+                if marker in line and not (exclude and exclude in line):
+                    turns += 1
+    except OSError:
+        return None
+    return turns or None
+
+
+def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False,
+                sources=None):
     """rows: list of resolve_row()-shaped tuples, already in display order.
     Prints the numbered table and, unless write_cache=False, writes the
     resume cache (cmd_search renders two sections with continuing numbers
@@ -2582,27 +2727,60 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
     judge's justification there. Shown as a WHY column, clipped to whatever
     width the terminal has left after the other fields: one line per hit, so
     a 10-hit search stays 10 lines. `full_notes` prints the unclipped reason
-    on its own line instead, which is what `--why` is for."""
+    on its own line instead, which is what `--why` is for.
+
+    sources: optional {full_id: light record}, for the listing only -- search
+    rows have none. It buys the TURNS column, counted per row as that row
+    prints, so the cost stays proportional to the rows actually shown rather
+    than to the size of the store."""
     if not rows:
         print("No sessions found.")
         return
+
+    # resolve_row already coerces a cwd that isn't a string; the formatter is
+    # the boundary that would crash on one, so it does not rely on every
+    # caller having done so. It has to happen before the width math below,
+    # which measures every row's cwd: a dict there reached _display_width as
+    # an iterable of its keys.
+    rows = [(*r[:4], r[4] if isinstance(r[4], str) else "?", *r[5:]) for r in rows]
 
     if write_cache:
         write_list_cache([{"tool": tool, "id": full_id} for tool, full_id, *_ in rows])
 
     notes = notes or {}
-    w_num = len(str(start + len(rows) - 1))
-    w_tool = max(4, max(len(r[0]) for r in rows))
-    w_when = max(4, max(len(r[2]) for r in rows))
-    w_id = max(2, max(len(r[3]) for r in rows))
-    # The reason needs room, so the working directory gives some up.
     inline_why = bool(notes) and not full_notes
-    w_cwd = min(24 if inline_why else 40, max(3, max(len(r[4]) for r in rows)))
+    here = os.getcwd()
+    # "▸" on the rows that belong to the directory you are standing in: the
+    # question you actually have when you type `ai` in a project.
+    marks = [_same_path(r[4], here) if isinstance(r[4], str) else False for r in rows]
+    marker = _row_marker()
+
+    w_num = len(str(start + len(rows) - 1))
+    w_tool = max(4, max(_display_width(r[0]) for r in rows))
+    w_when = max(4, max(_display_width(r[2]) for r in rows))
+    w_id = max(2, max(_display_width(r[3]) for r in rows))
+    # The reason needs room, so the working directory gives some up.
+    w_cwd = min(24 if inline_why else 40, max(3, max(_display_width(r[4]) for r in rows)))
+
+    show_turns = bool(sources) and not inline_why
+    if show_turns:
+        # Fit the plumbing before the title: the cwd is the most compressible
+        # (a path's tail still names the project), and if even a floor-width
+        # title does not fit, the turns column goes entirely -- the title is
+        # the one column that has to stay readable. The title itself is never
+        # clipped here; a long one wraps, as it always has.
+        overhead = MARK_WIDTH + w_num + w_tool + w_when + w_id + 10  # 5 gaps
+        room = shutil.get_terminal_size((100, 24)).columns - overhead - (TURNS_WIDTH + 2)
+        w_cwd = min(w_cwd, max(CWD_MIN_WIDTH, room - TITLE_MIN_WIDTH))
+        if shutil.get_terminal_size((100, 24)).columns - overhead - (TURNS_WIDTH + 2) - w_cwd < TITLE_MIN_WIDTH:
+            show_turns = False
+            w_cwd = min(w_cwd, max(CWD_MIN_WIDTH,
+                                   shutil.get_terminal_size((100, 24)).columns - overhead - TITLE_MIN_WIDTH))
 
     w_title = 0
     w_why = 0
     if inline_why:
-        fixed = w_num + w_tool + w_when + w_id + w_cwd + 10  # 2 spaces between fields
+        fixed = MARK_WIDTH + w_num + w_tool + w_when + w_id + w_cwd + 10  # 2 spaces between fields
         spare = shutil.get_terminal_size((100, 24)).columns - fixed
         if spare >= TITLE_MIN_WIDTH + WHY_MIN_WIDTH + 2:
             # Roughly even, leaning to the reason: a title that's clipped to a
@@ -2616,19 +2794,29 @@ def render_rows(rows, write_cache=True, start=1, notes=None, full_notes=False):
             w_why = max(1, spare // 2)
             w_title = max(1, spare - w_why - 2)
 
-    header = f"{'#':>{w_num}}  {'TOOL':<{w_tool}}  {'WHEN':<{w_when}}  {'ID':<{w_id}}  {'CWD':<{w_cwd}}  TITLE"
+    header = (f"{'':>{MARK_WIDTH}}{'#':>{w_num}}  {'TOOL':<{w_tool}}  {'WHEN':<{w_when}}  "
+              f"{'ID':<{w_id}}  {'CWD':<{w_cwd}}  ")
+    if show_turns:
+        header += f"{'TURNS':>{TURNS_WIDTH}}  "
+    header += "TITLE"
     if inline_why:
         header += f"{'':<{max(0, w_title - 5)}}  WHY"
-    print(header)
+    print(color.paint(header, color.BOLD))
     indent = " " * (w_num + 2)
     for n, (tool, full_id, when, sid, cwd_show, title) in enumerate(rows, start=start):
-        # resolve_row already coerces a cwd that isn't a string; the
-        # formatter is the boundary that would crash on one, so it does not
-        # rely on every caller having done so.
-        if not isinstance(cwd_show, str):
-            cwd_show = "?"
-        cwd_disp = cwd_show if len(cwd_show) <= w_cwd else "…" + cwd_show[-(w_cwd - 1):]
-        line = f"{n:>{w_num}}  {tool:<{w_tool}}  {when:<{w_when}}  {sid:<{w_id}}  {cwd_disp:<{w_cwd}}  "
+        mine = marks[n - start]
+        cwd_disp = _clip_tail(cwd_show, w_cwd)
+        line = (color.paint(marker, color.BOLD) + " " if mine else " " * MARK_WIDTH)
+        line += f"{n:>{w_num}}  "
+        line += color.paint(_pad(tool, w_tool), color.tool_color(tool)) + "  "
+        line += color.paint(_pad(when, w_when), color.DIM) + "  "
+        line += color.paint(_pad(sid, w_id), color.DIM) + "  "
+        line += (color.paint(_pad(cwd_disp, w_cwd), color.BOLD) if mine
+                 else _pad(cwd_disp, w_cwd)) + "  "
+        if show_turns:
+            turns = session_turns(sources[full_id]) if full_id in sources else None
+            shown = "?" if turns is None else str(turns)
+            line += color.paint(f"{shown:>{TURNS_WIDTH}}", color.DIM) + "  "
         if inline_why:
             line += f"{_clip(title, w_title):<{w_title}}  {_clip(notes.get((tool, full_id), ''), w_why)}"
         else:
