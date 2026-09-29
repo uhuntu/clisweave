@@ -458,7 +458,9 @@ def test_cmd_search_fallback_on_default_judge_session_limit(monkeypatch, capsys)
 
     assert len(calls) == 2
     assert calls[0][0][0][:2] == [search.DEFAULT_JUDGE, "-p"]
-    assert calls[1][0][0][:2] == ["codex", "exec"]
+    # the chain's next judge, not a hardcoded one: what follows the default
+    # is derived from JUDGE_CMD now, and claude sits there
+    assert calls[1][0][0][0] == search.fallback_order()[1]
     err = capsys.readouterr().err
     assert "falling back" in err
 
@@ -496,7 +498,7 @@ def test_cmd_search_fallback_on_default_judge_auth_failure(monkeypatch, capsys):
 
     assert len(calls) == 2
     assert calls[0][0][0][:2] == [search.DEFAULT_JUDGE, "-p"]
-    assert calls[1][0][0][:2] == ["codex", "exec"]
+    assert calls[1][0][0][0] == search.fallback_order()[1]
     assert "falling back" in capsys.readouterr().err
 
 
@@ -562,7 +564,8 @@ def test_cmd_search_fallback_on_rate_limited_judge(monkeypatch, capsys):
     search.cmd_search(["topic"])
 
     # both attempts at the default judge, then the fallback
-    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, search.DEFAULT_JUDGE, search.DEFAULT_JUDGE, "codex"]
+    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, search.DEFAULT_JUDGE,
+                                           search.DEFAULT_JUDGE, search.fallback_order()[1]]
     err = capsys.readouterr().err
     assert "rate limited; retrying" in err
     assert "falling back to next judge" in err
@@ -633,8 +636,56 @@ def test_cmd_search_fallback_on_default_judge_timeout(monkeypatch, capsys):
 
     search.cmd_search(["topic"])
 
-    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, "codex"]
+    assert [call[0] for call in calls] == [search.DEFAULT_JUDGE, search.fallback_order()[1]]
     assert "timed out; falling back" in capsys.readouterr().err
+
+
+def test_fallback_order_covers_every_judge():
+    """The chain was a hand-written tail: [DEFAULT_JUDGE, "codex", "kimi",
+    "step"]. While claude led it, that named the whole set only because
+    claude was the one leading -- the moment the default moved to step,
+    claude dropped out of the sequence entirely: installed on this box,
+    working, reachable with --judge claude, and never once tried by the
+    fallback while the comment promised the chain behind step was real.
+    It is derived from JUDGE_CMD now; this holds it to that."""
+    order = search.fallback_order()
+    assert order[0] == search.DEFAULT_JUDGE
+    assert set(order) == set(search.JUDGE_CMD)
+    assert len(order) == len(set(order))  # no judge asked twice
+
+
+def test_a_judge_that_cannot_be_spawned_falls_through(monkeypatch, capsys):
+    """A default judge that is not on PATH used to kill the search outright
+    ("'claude' not found on PATH" was the reported failure, on a box where
+    the next judge in the chain worked fine): a judge that cannot start is
+    just as unusable for the whole run as one at its session limit, so it
+    belongs in the same fall-through."""
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r["title"],
+    ))
+
+    calls = []
+
+    class OK:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[0])
+        if argv[0] == search.DEFAULT_JUDGE:
+            raise FileNotFoundError(argv[0])
+        return OK()
+
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["topic"])
+
+    assert calls == [search.DEFAULT_JUDGE, search.fallback_order()[1]]
+    assert "could not be run; falling back to next judge" in capsys.readouterr().err
 
 
 def test_cmd_search_explicit_claude_session_limit_shows_hint(monkeypatch, capsys):
@@ -760,10 +811,11 @@ def test_first_batch_selects_judge_for_remaining_batches(monkeypatch):
 
     search.cmd_search(["topic"])
 
-    # The default judge is probed only by the first batch. Once codex
-    # succeeds, both remaining batches start directly with codex.
+    # The default judge is probed only by the first batch. Once the next
+    # judge in the chain succeeds, both remaining batches start with it.
+    next_judge = search.fallback_order()[1]
     assert calls.count(search.DEFAULT_JUDGE) == 1
-    assert calls.count("codex") == 3
+    assert calls.count(next_judge) == 3
 
 
 def test_cmd_search_unions_matches_across_chunks(monkeypatch):

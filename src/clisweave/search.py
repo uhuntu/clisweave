@@ -353,6 +353,19 @@ def _is_rate_limited(result):
     )
 
 
+def fallback_order():
+    """The judge sequence for an unpinned search: the default first, then
+    every judge JUDGE_CMD knows, deduped.
+
+    Derived rather than listed because a hand-maintained tail silently drops
+    judges: when claude was the default, `[DEFAULT_JUDGE, "codex", "kimi",
+    "step"]` named the whole set only because claude was leading it. Moving
+    the default to step left claude out entirely -- installed here, working,
+    reachable with --judge claude, and never once tried by the fallback while
+    the comment above DEFAULT_JUDGE promised the chain behind step was real."""
+    return list(dict.fromkeys([DEFAULT_JUDGE, *JUDGE_CMD]))
+
+
 def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     """Run the judge (falling back off one that is unusable for the whole
     run -- its own session limit, or an expired login -- unless the user
@@ -360,16 +373,13 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     of one. A transient rate limit is retried on the same judge first.
     Returns the picked local indices and the judge that succeeded.
     Raises JudgeError if every judge in the fallback sequence fails."""
-    # Ordered preference for an unpinned judge: the default first, then the
-    # rest. Deduped, because "step" is DEFAULT_JUDGE on this box and also
-    # appears in the tail list -- retrying it there would be pointless.
-    fallback_order = list(dict.fromkeys([DEFAULT_JUDGE, "codex", "kimi", "step"]))
+    order = fallback_order()
     if judge_explicit:
         judges = [judge]
     else:
-        # A prior batch may already have selected codex or kimi. Resume at
+        # A prior batch may already have selected a later judge. Resume at
         # that point instead of retrying judges known not to be available.
-        judges = fallback_order[fallback_order.index(judge):]
+        judges = order[order.index(judge):]
     # Named in the "sign in again" hints: every judge this machine supports
     # except the one that just failed.
     others = ", ".join(f"--judge {j}" for j in JUDGE_CMD if j != judge) or "another --judge"
@@ -380,8 +390,15 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             result = _call_judge(j, prompt)
         except JudgeError as e:
             has_fallback = not judge_explicit and judge_idx + 1 < len(judges)
-            if e.code == 124 and has_fallback:
-                print("  -> timed out; falling back to next judge", file=sys.stderr)
+            # 124: hung. 127: it could not even be spawned -- not on PATH, or
+            # the exec was refused. Both make this judge unusable for the
+            # whole run for the same reason a session limit does, and 127 is
+            # the common case for a DEFAULT_JUDGE this machine does not have:
+            # it used to kill the search outright, on a box where the very
+            # next judge in the chain worked fine.
+            if e.code in (124, 127) and has_fallback:
+                why = "timed out" if e.code == 124 else "could not be run"
+                print(f"  -> {why}; falling back to next judge", file=sys.stderr)
                 continue
             raise
         if result.returncode == 0:
