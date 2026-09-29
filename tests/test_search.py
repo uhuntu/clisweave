@@ -502,6 +502,107 @@ def test_cmd_search_fallback_on_default_judge_auth_failure(monkeypatch, capsys):
     assert "falling back" in capsys.readouterr().err
 
 
+def test_cmd_search_codex_auth_failure_falls_back(monkeypatch, capsys):
+    """Regression test for the real 622-session search that lost batch
+    12/13: step hung on the 240 s clock, claude's OAuth had expired, and
+    codex's expired credentials were worded "Failed to refresh token ...
+    refresh_token_expired ... Provided authentication token is expired" --
+    which matched none of the two auth markers, so its failure read as a
+    one-off batch error rather than a judge dead for the whole run. The chain
+    aborted at codex and kimi, still reachable and installed, was never
+    asked: 50 of 622 sessions went unjudged and the run degraded to
+    "1/13 batches failed". Every judge in the chain must get its turn."""
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+
+    class ExpiredClaude:
+        returncode = 1
+        stdout = "Failed to authenticate: OAuth session expired and could not be refreshed"
+        stderr = ""
+
+    # Verbatim from the real run -- note it never says "authenticate", which
+    # is exactly what the old predicate was looking for.
+    class ExpiredCodex:
+        returncode = 1
+        stdout = (
+            'ERROR codex_login::auth::manager: Failed to refresh token status=401 '
+            'Unauthorized detail=TokenErrorDetail { error_code: '
+            'Some("refresh_token_expired"), .. }\n'
+            "ERROR codex_login::auth::manager: Failed to refresh token: Your access "
+            "token could not be refreshed because your refresh token has expired. "
+            "Please log out and sign in again.\n"
+            "ERROR codex_models_manager::manager: failed to refresh available models: "
+            "unexpected status 401 Unauthorized: Provided authentication token is "
+            "expired. Please try signing in again., auth error code: token_expired"
+        )
+        stderr = ""
+
+    class KimiOK:
+        returncode = 0
+        stdout = "none"
+        stderr = ""
+
+    responses = [ExpiredClaude, ExpiredCodex, KimiOK]
+    calls = []
+
+    def fake_run(*a, **kw):
+        n = len(calls)
+        calls.append((a, kw))
+        if n == 0:
+            # step is first in the chain and hung on the clock, as it did
+            raise search.subprocess.TimeoutExpired(
+                search.JUDGE_CMD[search.DEFAULT_JUDGE],
+                search.JUDGE_TIMEOUT_SECONDS,
+            )
+        return responses[n - 1]()
+
+    monkeypatch.setattr(search.subprocess, "run", fake_run)
+
+    search.cmd_search(["topic"])
+
+    # step never returned a result; the other three each got exactly one
+    # turn, and the chain reached its last judge.
+    assert [c[0][0][0] for c in calls] == search.fallback_order()
+    err = capsys.readouterr().err
+    assert "falling back" in err
+    assert "batches failed" not in err
+
+
+def test_cmd_search_codex_auth_failure_shows_login_hint(monkeypatch, capsys):
+    """Pinning a judge that reports credentials as "Failed to refresh token"
+    must still surface the re-login hint, not just exit 1 silently."""
+    monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
+        {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},
+    ])
+    monkeypatch.setattr(sessions, "resolve_row", lambda r: (
+        r["tool"], r["id"], "1h ago", r["id"][:6], "?", r.get("title", "(no title)"),
+    ))
+
+    class ExpiredCodex:
+        returncode = 1
+        stdout = (
+            "ERROR codex_login::auth::manager: Failed to refresh token status=401 "
+            'Unauthorized detail=TokenErrorDetail { error_code: '
+            'Some("refresh_token_expired"), .. }'
+        )
+        stderr = ""
+
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **kw: ExpiredCodex())
+
+    with pytest.raises(SystemExit) as exc_info:
+        search.cmd_search(["--judge", "codex", "topic"])
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "login has expired" in err
+    # codex is the failing judge, so it must not be offered as the escape
+    assert "--judge codex" not in err
+    assert "--judge kimi" in err
+
+
 def test_cmd_search_explicit_claude_auth_failure_shows_login_hint(monkeypatch, capsys):
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: [
         {"tool": "codex", "id": "id-1", "ts": 1, "title": "x"},

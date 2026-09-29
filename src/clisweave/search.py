@@ -321,16 +321,37 @@ def _is_session_limit(result):
     return "session limit" in output.lower()
 
 
+# A judge's own wording for "your login is dead". Each CLI says it
+# differently, so these are matched, not assumed to be one shared phrase:
+# claude emits "Failed to authenticate ... Re-authenticate", while codex's
+# expired credentials come out of its login manager as "Failed to refresh
+# token ... refresh_token_expired ... Provided authentication token is
+# expired". Two markers could not cover both: a real search lost batch 12/13
+# exactly here -- neither codex literal matched, so its failure was read as
+# a one-off batch error rather than a judge dead for the whole run, and the
+# chain aborted at codex instead of advancing to the remaining judge. Every
+# marker is specific enough that an ordinary batch failure (a crash, an
+# empty reply, a transient network error) will not trip it.
+_AUTH_FAILURE_MARKERS = (
+    "failed to authenticate",
+    "re-authenticate",
+    "failed to refresh token",
+    "token_expired",
+    "authentication token is expired",
+)
+
+
 def _is_auth_failure(result):
     """A judge's login expired or was revoked ("Failed to authenticate. API
     Error: 401 OAuth access token has expired"). Like a session limit, it
     makes that judge unusable for the whole run -- every batch fails the
     same way -- so it warrants the same fall-through to another judge.
     Historically this was claude-only, but codex and kimi report expired
-    credentials in the same shape."""
+    credentials too -- each in its own wording, so the whole chain is
+    matched rather than the one phrase claude happens to use."""
     output = (result.stdout or "") + (result.stderr or "")
     lowered = output.lower()
-    return "failed to authenticate" in lowered or "re-authenticate" in lowered
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
 
 
 def _is_rate_limited(result):
