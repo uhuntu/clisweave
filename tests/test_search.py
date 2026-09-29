@@ -623,7 +623,7 @@ def test_cmd_search_splits_into_chunks_of_chunk_size(monkeypatch, capsys):
     which contained the search term just as clearly as the one that *was*
     found) -- a 'lost in a long list' recall failure. Candidates must be
     split into CHUNK_SIZE-sized batches, each judged independently."""
-    n = search.CHUNK_SIZE * 2 + 30  # 3 chunks: 100, 100, 30
+    n = search.CHUNK_SIZE * 2 + 30  # 3 chunks: CHUNK_SIZE, CHUNK_SIZE, 30
     monkeypatch.setattr(search, "gather_candidates", lambda tool_filter, show_all=False: _fake_candidates(n))
     _stub_resolve_and_render(monkeypatch)
 
@@ -697,12 +697,12 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
             self.stderr = ""
 
     def fake_run(argv, input=None, **kw):
-        # chunk 1 (global candidates 0..99) opens with "session 0"; chunk 2
-        # (100..104) opens with "session 100" -- identify by content, not
-        # call order, since chunks run in parallel threads.
+        # chunk 1 (global candidates 0..CHUNK_SIZE-1) opens with "session 0"; chunk 2
+        # (CHUNK_SIZE..2*CHUNK_SIZE-1) opens with "session <CHUNK_SIZE>" -- identify by
+        # content, not call order, since chunks run in parallel threads.
         if "— session 0 ::" in input:
             return FakeResult("1")  # local #1 in chunk 1 -> global candidate 0
-        return FakeResult("2")  # local #2 in chunk 2 (offset 100) -> global row 102 -> id-101
+        return FakeResult("2")  # local #2 in chunk 2 (offset CHUNK_SIZE) -> global candidate CHUNK_SIZE+1
 
     monkeypatch.setattr(search.subprocess, "run", fake_run)
 
@@ -710,7 +710,7 @@ def test_cmd_search_unions_matches_across_chunks(monkeypatch):
 
     assert len(rendered) == 1
     matched_ids = {row[1] for row in rendered[0]}
-    assert matched_ids == {"id-0", "id-101"}
+    assert matched_ids == {"id-0", f"id-{search.CHUNK_SIZE + 1}"}
 
 
 def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys):
@@ -726,7 +726,7 @@ def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys
 
     class OK:
         returncode = 0
-        stdout = "1"  # local #1 in chunk 2 (offset 100) -> global row 101 -> id-100
+        stdout = "1"  # local #1 in chunk 2 (offset CHUNK_SIZE) -> global candidate CHUNK_SIZE
         stderr = ""
 
     def fake_run(argv, input=None, **kw):
@@ -742,7 +742,7 @@ def test_cmd_search_partial_failure_still_shows_other_chunks(monkeypatch, capsys
     assert "batches failed; showing partial results" in err
     assert len(rendered) == 1
     matched_ids = {row[1] for row in rendered[0]}
-    assert matched_ids == {"id-100"}  # only chunk 2's match survives
+    assert matched_ids == {f"id-{search.CHUNK_SIZE}"}  # only chunk 2's match survives
 
 
 def test_cmd_search_all_chunks_fail_exits_nonzero(monkeypatch, capsys):

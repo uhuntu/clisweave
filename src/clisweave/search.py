@@ -101,8 +101,13 @@ DEFAULT_JUDGE = "step"
 JUDGE_USES_STDIN = {"claude", "codex", "step"}
 
 # See module docstring for why candidates are chunked instead of judged in
-# one batch.
-CHUNK_SIZE = 100
+# one batch.  Kept at 50 rather than 100 because a chunk's cost is now
+# batch size x verification depth (the judge checks candidates against the
+# live repo): at 100 the 622-session search lost batches 3/7 and 4/7 to the
+# 240s clock and both fell back to codex, where recall was no longer the
+# same judge's.  Batches fan out 8 at a time, so the extra calls cost wall
+# clock only in waves, and per the docstring smaller batches judge better.
+CHUNK_SIZE = 50
 
 # A judge CLI can occasionally stop responding (for example while waiting on
 # a network request).  Without a timeout, one stuck chunk keeps the whole
