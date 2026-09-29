@@ -105,7 +105,7 @@ JUDGE_USES_STDIN = {"claude", "codex", "step"}
 # batch size x verification depth (the judge checks candidates against the
 # live repo): at 100 the 622-session search lost batches 3/7 and 4/7 to the
 # 240s clock and both fell back to codex, where recall was no longer the
-# same judge's.  Batches fan out 8 at a time, so the extra calls cost wall
+# same judge's.  Batches fan out 4 at a time, so the extra calls cost wall
 # clock only in waves, and per the docstring smaller batches judge better.
 CHUNK_SIZE = 50
 
@@ -120,7 +120,12 @@ JUDGE_TIMEOUT_SECONDS = 240
 
 # Once the first batch has selected a working judge, the remaining batches
 # can safely fan out without probing an unavailable judge over and over.
-MAX_CONCURRENT_BATCHES = 8
+# Bounded below the step account's own concurrency limit (5 requests):
+# each judge process holds one API request in flight, so 8 parallel
+# batches oversubscribed it and the real 622-session search lost 5 of 13
+# batches to HTTP 429 "concurrency reached, current: 6, limit: 5". One
+# slot of headroom stays for the caller's own traffic.
+MAX_CONCURRENT_BATCHES = 4
 
 # The judge ranks its hits strongest-first, so the tail is the weakest of them
 # -- mostly sessions that share a field with the topic rather than being about
@@ -317,6 +322,26 @@ def _is_auth_failure(result):
     return "failed to authenticate" in lowered or "re-authenticate" in lowered
 
 
+def _is_rate_limited(result):
+    """The judge's backend refused the call for too much traffic -- real
+    shape: `429: {"message":"concurrency reached, current: 6, limit:
+    5","type":"rate_limited"}`. Like a session limit, it is that judge's
+    whole run (every parallel batch fails identically), and it deserves
+    the fall-through even more: a 429 is transient by nature, while the
+    next judge in the chain talks to a *different* backend and is not
+    sharing this one's concurrency budget. Without this, one burst over
+    the account's parallel-request limit takes the affected batches down
+    instead of moving them to a judge with capacity to spare."""
+    output = (result.stdout or "") + (result.stderr or "")
+    lowered = output.lower()
+    return (
+        "rate_limited" in lowered
+        or "rate limit" in lowered
+        or "too many requests" in lowered
+        or "concurrency reached" in lowered
+    )
+
+
 def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
     """Run the judge (falling back off one that is unusable for the whole
     run -- its own session limit, or an expired login -- unless the user
@@ -356,7 +381,7 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             print(result.stdout, file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        if _is_session_limit(result) or _is_auth_failure(result):
+        if _is_session_limit(result) or _is_auth_failure(result) or _is_rate_limited(result):
             # Every judge has its own session limit and its own way of saying
             # a login expired, and either makes it unusable for the rest of
             # the run, so this is not claude-specific.
@@ -365,6 +390,8 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
                 continue
             if _is_auth_failure(result):
                 print(f"  hint: {j}'s login has expired. Run `{j}` and sign in again, or use one of: {others}.", file=sys.stderr)
+            elif _is_rate_limited(result):
+                print(f"  hint: {j} is being rate limited (concurrency/request cap), and the other judges use different backends. Retry, or use one of: {others}.", file=sys.stderr)
             else:
                 print(f"  hint: {j} is at its session limit. Retry after the reset time, or use one of: {others}.", file=sys.stderr)
         raise JudgeError(result.returncode)
