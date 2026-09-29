@@ -103,6 +103,35 @@ def open_text(path):
     return open(path, encoding="utf-8", errors="replace")
 
 
+def harden_console_output():
+    """Stop one unprintable character from taking the whole run down.
+
+    Titles, cwds and judge reasons are whatever was typed into the session,
+    and a console set to a legacy code page (GBK on a Chinese system, Shift
+    JIS on a Japanese one) cannot encode most of Unicode -- so a session
+    titled with a bullet aborted `ai` six rows into its own listing with a
+    UnicodeEncodeError traceback. The listing is the one command with no
+    other way to look at your sessions, so it has to reach the last row.
+
+    Switching the error handler to "replace" keeps the console's own
+    encoding -- everything it can show is still shown -- and prints "?"
+    for what it cannot, one character wide so the columns stay lined up.
+    open_text is the mirror image of this on the read side; this is the
+    write side, and it belongs at the entry points because every command
+    prints something.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # replaced by something that is not a text stream
+        try:
+            reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Detached, closed or already finalized. There is nothing
+            # sensible to do about it, and the stream may still work.
+            pass
+
+
 def dict_field(obj, key):
     """The value of `key` when it is a dict, else {}.
 
@@ -2747,6 +2776,7 @@ def cmd_resume(args):
 
 
 def main():
+    harden_console_output()
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         print("Usage: ai-sessions <list|resume> [options]")

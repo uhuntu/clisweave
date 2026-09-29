@@ -191,6 +191,10 @@ def build_command(tool, rest):
 
 
 def main():
+    # Before anything prints: a title the console's code page cannot encode
+    # must not abort the command (see harden_console_output).
+    sessions.harden_console_output()
+
     argv = sys.argv[1:]
 
     if argv and argv[0] in ("-h", "--help"):
