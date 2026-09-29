@@ -94,6 +94,29 @@ def test_light_records_read_id_cwd_and_timestamp_from_the_header(tmp_path):
     assert r["started"] > 0
 
 
+def test_a_store_step_writes_flat_is_read_too(tmp_path):
+    """step's own default store keeps sessions in per-project subdirectories,
+    so the reader globbed only `*/*.jsonl`. Point the store at a fresh
+    directory -- $STEP_CODING_AGENT_SESSION_DIR, which this module reads
+    through and the README offers as the way to relocate the store, or step's
+    own --session-dir -- and step writes the file straight at the root
+    instead (checked against both). Every session it then created was
+    invisible here: `ai sessions --tool step` printed an empty table, and a
+    title lookup or a handoff into that store read nothing."""
+    store = tmp_path / "flat"
+    store.mkdir()
+    path = store / ("2026-09-29T05-49-49-641Z_%s.jsonl" % SID)
+    path.write_text(json.dumps(header(cwd="/home/hunt")) + "\n" +
+                    json.dumps(user("written at the root of the store")) + "\n",
+                    encoding="utf-8")
+    # a direct assignment, not a monkeypatch: the autouse fixture resets
+    # STEP_SESSIONS for every test, so nothing leaks between them
+    sessions.STEP_SESSIONS = str(store)
+
+    assert [r["id"] for r in sessions.step_light_records()] == [SID]
+    assert sessions.step_light_records()[0]["path"] == str(path)
+
+
 def test_cwd_falls_back_to_the_encoded_directory_name(tmp_path):
     """A session file whose header never got flushed still has the directory
     it lives in -- the same encoding claude uses."""
@@ -121,11 +144,35 @@ def test_newest_write_wins_per_id(tmp_path):
     assert records[0]["path"].endswith(newer)
 
 
-def test_a_session_without_an_id_is_named_by_its_file(tmp_path):
+def test_a_session_whose_header_never_flushed_is_named_by_the_id_in_its_file(tmp_path):
+    """step names its session files `<timestamp>_<id>.jsonl`, so a header
+    that never flushed still leaves the id in the name -- but only the id.
+    Taking the whole stem put `2026-09-27T` in the row's ID column, kept a
+    uuid prefix from resolving (step_resolve matches the start of the id),
+    and handed `step --resume` a string that is neither the path it accepts
+    nor the partial uuid it accepts: listed, but never resumable."""
     step_store(tmp_path, "--C--Users-huntl--", [
-        ("2026-09-27T03-20-47-723Z_deadbeef.jsonl", [{"type": "message", "message": {"role": "user", "content": "hi"}}]),
+        ("2026-09-27T03-20-47-723Z_%s.jsonl" % SID,
+         [{"type": "message", "message": {"role": "user", "content": "hi"}}]),
+        # no timestamp in front of it: kept whole rather than trimmed
+        ("notes.jsonl", [{"type": "message", "message": {"role": "user", "content": "hi"}}]),
     ])
-    assert sessions.step_light_records()[0]["id"] == "2026-09-27T03-20-47-723Z_deadbeef"
+    assert sorted(r["id"] for r in sessions.step_light_records(show_all=True)) == sorted([SID, "notes"])
+    assert sessions.step_resolve(SID[:8]) == [SID]
+
+
+def test_a_headerless_subagent_file_is_still_left_out(tmp_path):
+    """The subagent filter keys on the id starting with `subagent-`. Without
+    a header to supply one, the filename has to -- and if the timestamp had
+    been stripped off the wrong way, a subagent session would come back as an
+    ordinary one and pollute every listing."""
+    step_store(tmp_path, "--home-hunt--", [
+        ("2026-09-27T03-26-16-016Z_subagent-4a217d06-ad51-4f33-beb4-09ff1471661a.jsonl",
+         [{"type": "message", "message": {"role": "user", "content": "someone else's context"}}]),
+    ])
+    assert sessions.step_light_records() == []
+    assert [r["id"] for r in sessions.step_light_records(show_all=True)] == [
+        "subagent-4a217d06-ad51-4f33-beb4-09ff1471661a"]
 
 
 def test_subagent_sessions_are_left_out_unless_all(tmp_path):

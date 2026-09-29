@@ -1794,6 +1794,12 @@ STEP_SESSIONS = os.environ.get(
     "STEP_CODING_AGENT_SESSION_DIR",
     os.path.join(HOME, ".stepcode", "agent", "sessions"))
 
+# step's own session-file naming: `<timestamp>_<id>.jsonl`, timestamp in the
+# form it writes headers with ("2026-09-27T03:20:47.723Z", colons and dot
+# turned into dashes). Anything before the first underscore that looks like
+# one is the prefix; what follows is the id.
+STEP_FILE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[^_]*_(.+)$")
+
 # step marks a pasted image with a *text* block reading "[Image #1]" rather
 # than claude's "[Image: source: ...]" spelling.
 STEP_IMAGE_PREFIX = "[Image #"
@@ -1833,6 +1839,23 @@ def step_session_header(path):
     return None, None, 0, None
 
 
+def step_session_id_from_filename(path):
+    """The id to use for a session file whose header never gave one.
+
+    step names its session files `<timestamp>_<id>.jsonl`, so the id is
+    still in the name -- but only the id: keeping the timestamp as well put
+    `2026-09-27T` in the row's ID column, stopped a uuid prefix from
+    resolving here (step_resolve matches on the start of the id), and handed
+    `step --resume` a string that is neither the path it accepts nor the
+    partial uuid it accepts. A name with no timestamp in front is kept whole
+    -- `subagent-<uuid>` in particular, since the subagent filter keys on the
+    id starting with that and a headerless subagent file would otherwise
+    become an ordinary-looking session."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    m = STEP_FILE_NAME_RE.match(stem)
+    return m.group(1) if m else stem
+
+
 def step_light_records(show_all=False):
     """One record per step session, newest write wins per id.
 
@@ -1843,14 +1866,24 @@ def step_light_records(show_all=False):
     by_id = {}
     if not os.path.isdir(STEP_SESSIONS):
         return []
-    for path in glob.glob(os.path.join(STEP_SESSIONS, "*", "*.jsonl")):
+    # Both layouts step writes: its own default is per-project subdirectories
+    # (<session-dir>/<encoded-cwd>/<file>.jsonl), but point the store at a
+    # fresh directory -- $STEP_CODING_AGENT_SESSION_DIR, which this module
+    # reads through and the README offers as the way to relocate the store,
+    # or step's own --session-dir -- and it writes the file straight at the
+    # root. Only `*/*.jsonl` was globbed, so with either set every session
+    # step created was invisible here: `ai sessions --tool step` printed an
+    # empty table, and a title lookup or a handoff into that store read
+    # nothing.
+    for path in (glob.glob(os.path.join(STEP_SESSIONS, "*", "*.jsonl"))
+                 + glob.glob(os.path.join(STEP_SESSIONS, "*.jsonl"))):
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             continue
         sid, cwd, started, name = step_session_header(path)
         if not sid:
-            sid = os.path.splitext(os.path.basename(path))[0]
+            sid = step_session_id_from_filename(path)
         if not show_all and sid.startswith("subagent-"):
             continue
         prev = by_id.get(sid)
