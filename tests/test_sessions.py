@@ -2058,11 +2058,13 @@ def test_cmd_resume_cwd_matching_real_dir_just_resumes(monkeypatch, tmp_path, ca
 
 def test_cmd_resume_cwd_mismatch_hands_off_to_fresh_session_instead(monkeypatch, tmp_path, capsys):
     """--cwd pointing at a directory *other* than the session's own recorded
-    one can't actually relocate it (claude/codex/kimi all tie a session's
-    transcript to its original directory -- resuming from elsewhere works
-    but never becomes visible to that directory's own resume picker). So
+    one can't actually relocate it: all four tie a session's transcript to
+    its original directory. claude/codex/kimi keep writing there, so the
+    resumed turn is never visible to the new directory's own resume picker;
+    step stops to ask "Fork this session into current directory? [y/N]",
+    which under -p is a non-interactive exit 1 having written nothing. So
     it should hand off to a fresh, seeded session there instead of issuing
-    a --resume that would silently do nothing useful for that directory."""
+    a --resume that would do nothing useful for that directory, or fail."""
     session_original_dir = tmp_path / "original-project"
     session_original_dir.mkdir()
     forced_dir = tmp_path / "wrong-question-book"

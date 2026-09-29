@@ -111,7 +111,7 @@ def update_self():
 
 
 def update_tools():
-    """Run each of claude/codex/kimi's own update command, skipping any
+    """Run each of claude/codex/kimi/step's own update command, skipping any
     that aren't installed. Returns 0 unless one that IS installed fails.
 
     A failed update is retried (per-tool counts in TOOL_UPDATE_RETRIES), and

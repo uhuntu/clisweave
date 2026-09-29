@@ -1,4 +1,4 @@
-"""Session listing/resuming across claude, codex, and kimi CLIs.
+"""Session listing/resuming across the claude, codex, kimi, and step CLIs.
 Invoked via `ai sessions` / `ai resume`, or standalone as `ai-sessions`.
 """
 import calendar
@@ -1697,13 +1697,20 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
     target_tool session seeded with it.
 
     Used both to switch tools (`ai <N> <other-tool>`) and to relocate a
-    same-tool session to a directory it was never created in: claude,
-    codex, and kimi all tie a session's transcript permanently to its
-    original project directory (confirmed by testing `claude --resume`
-    from an unrelated directory -- the new turn was appended to the
-    *original* directory's log, nothing was written under the new one),
-    so a real `--resume`/`-S` from elsewhere never becomes visible to
-    that directory's own resume picker. A fresh, seeded session does."""
+    same-tool session to a directory it was never created in. All four tie
+    a session's transcript to its original project directory -- they only
+    say so differently: claude, codex and kimi quietly keep writing to the
+    *original* directory's log while the new one never sees the session
+    (confirmed for claude by testing `claude --resume` from an unrelated
+    directory -- the new turn appended there, nothing written under the new
+    one), whereas step stops and asks "Session found in different project
+    ... Fork this session into current directory? [y/N]", which under `-p`
+    has no TTY to answer and so exits 1 with nothing written (checked
+    against the installed binary). What step offers instead is a fork: a new
+    file, new id, rooted in the new directory -- which is what this does on
+    purpose. Either way a plain `--resume`/`-S` from elsewhere never becomes
+    visible to that directory's own resume picker. A fresh, seeded session
+    does."""
     details = session_handoff_details(source_tool, source_id)
     if not details:
         print(f"ai handoff: source session {source_id} is no longer available", file=sys.stderr)
@@ -2710,12 +2717,14 @@ def cmd_resume(args):
             if os.path.realpath(forced_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(forced_cwd)
         else:
-            # claude/codex/kimi all tie a session's transcript permanently to
-            # its original directory -- resuming it from elsewhere works, but
-            # never becomes visible to *that* directory's own resume picker
-            # (verified: the resumed turn was appended to the original
-            # directory's log, nothing was written under the new one). A real
-            # relocation needs a fresh, seeded session instead.
+            # All four tie a session's transcript to its original directory,
+            # so resuming from here would never show this session to *this*
+            # directory's own resume picker: claude/codex/kimi keep writing
+            # to the original directory's log, and step stops to ask "Fork
+            # this session into current directory? [y/N]" -- with -p that is
+            # a non-interactive exit 1, having written nothing (both checked
+            # against step's binary). A real relocation needs a fresh,
+            # seeded session instead -- which is step's own answer too.
             print(f"ai resume: {tool} sessions can't be relocated in place -- starting a fresh "
                   f"session in {forced_cwd} with this one's context instead", file=sys.stderr)
             perform_handoff(tool, full_id, tool, extra, forced_cwd=forced_cwd)
