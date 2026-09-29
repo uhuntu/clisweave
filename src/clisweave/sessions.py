@@ -2345,6 +2345,21 @@ def _handoff_seed_texts(tool, d):
         if payload.get("type") != "message" or payload.get("role") not in ("user", "assistant"):
             return []
         return _all_text_blocks(payload.get("content"), ("input_text", "text", "output_text"))
+    if tool == "step":
+        # step's records are `type: "message"`, which is nobody else's spelling
+        # (claude writes user/assistant, codex response_item), so this cannot
+        # read another tool's transcript as a step one. Without this branch a
+        # session `ai 3 step` started was never recognized as a handoff: it
+        # fell to the kimi checks below, matched nothing, and the row kept the
+        # seed's own "ai handoff from claude" label instead of inheriting the
+        # source session's topic -- and a chain of handoffs dead-ended at the
+        # first hop into step.
+        if d.get("type") != "message":
+            return []
+        message = dict_field(d, "message")
+        if message.get("role") not in ("user", "assistant"):
+            return []
+        return _all_text_blocks(list_field(message, "content"))
     if d.get("type") == "turn.prompt":
         return _all_text_blocks(list_field(d, "input"))
     if d.get("type") == "context.append_loop_event":

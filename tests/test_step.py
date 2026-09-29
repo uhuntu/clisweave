@@ -418,6 +418,54 @@ def test_handoff_exports_the_conversation_and_starts_step(monkeypatch, tmp_path)
     assert "the lock was stale" not in body
 
 
+def test_a_session_handed_to_step_is_named_after_its_source(monkeypatch, tmp_path):
+    """`ai <N> step` seeds the new session with "Continue the work from this
+    claude session (...)". Reading that seed back is what retitles the row
+    "(handoff) <source topic>" instead of the generated label, and what lets
+    a chain of handoffs be followed to its origin. step's records are `type:
+    "message"` -- a spelling no other tool uses and that none of the seed
+    readers looked for -- so every session handed *to* step kept the label
+    and dead-ended the chain at that hop."""
+    seed = ("Continue the work from this claude session (019abc123456). "
+            "Read the complete conversation export at /tmp/x.md. First "
+            "briefly summarize the current objective, decisions, "
+            "completed work, and unfinished work.")
+    store = step_store(tmp_path, "--home-hunt--", [
+        ("f_%s.jsonl" % SID, [
+            header(cwd="/home/hunt"),
+            user(seed),
+            assistant(("text", {"text": "Picking up the NFC lock work."})),
+        ]),
+    ])
+    rec = sessions.step_light_records()[0]
+
+    assert sessions.handoff_source(rec["path"], "step") == ("claude", "019abc123456")
+
+    # With the source session present in its own store, the row inherits its
+    # topic rather than showing the seed's "ai handoff from claude".
+    src = tmp_path / "claude-src.jsonl"
+    src.write_text(json.dumps(
+        {"type": "user", "cwd": "/home/hunt",
+         "message": {"content": "fix the nfc lock"}}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(sessions, "claude_light_records", lambda: [
+        {"tool": "claude", "id": "019abc123456", "ts": 1, "path": str(src)},
+    ])
+
+    assert sessions._resolve_title_and_cwd(rec)[0] == "(handoff) fix the nfc lock"
+
+    # ...and only as the opening message: the same seed quoted later, in an
+    # assistant reply, is somebody discussing a handoff, not a session made
+    # by one.
+    quoted = store / "--home-hunt--" / "quoted.jsonl"
+    quoted.write_text("".join(json.dumps(line) + "\n" for line in [
+        header(cwd="/home/hunt", timestamp="2026-09-27T03:20:48.723Z"),
+        user("what did that handoff say?"),
+        assistant(("text", {"text": "It said: " + seed})),
+    ]), encoding="utf-8")
+
+    assert sessions.handoff_source(str(quoted), "step") is None
+
+
 def test_resume_passes_the_id_to_step_not_to_the_previous_tool(monkeypatch, tmp_path):
     """The resume argv is built by a per-tool chain whose last branch was
     kimi's; a tool appended after it silently resumed with the wrong CLI."""
