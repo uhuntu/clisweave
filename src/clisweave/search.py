@@ -77,14 +77,21 @@ JUDGE_CMD = {
     "kimi": ["kimi", "-p"],
     # --no-session: step has no per-run ephemeral flag beyond that, and the
     # judge's prompt would otherwise land in the listing this search reads.
-    "step": ["step", "-p", "--no-session"],
+    # --non-interactive-approval allow: this judge is spawned with no
+    # approval UI, and step falls back to *deny* there -- so an incidental
+    # tool call (the judge verifying a candidate against the live repo)
+    # is blocked and takes the whole batch down with it. Real cost: `ai
+    # search B_NFC_LOCATION_27` lost 3 of 7 batches to exactly that, with
+    # "Blocked run_command" where the matches should have been. Same pair
+    # cli.py's --yolo attaches to step for the same reason.
+    "step": ["step", "-p", "--no-session", "--non-interactive-approval", "allow"],
 }
 # Which judge runs when the caller does not pass --judge. This is a
 # per-machine setting: it must name a judge that is actually installed here,
 # because the fallback sequence below is only entered *after* this one has
-# already failed. claude/codex/kimi are supported but absent on this box;
-# clisweave runs under step (the StepCode CLI), which is installed and
-# authenticated, so it leads.
+# already failed. claude, codex, and kimi are installed on this box as well
+# (verified on PATH), so the fallback chain behind step is real; clisweave
+# also runs under step (the StepCode CLI), which leads.
 DEFAULT_JUDGE = "step"
 
 # Judges that accept the prompt on stdin instead of argv. Passing a long

@@ -14,6 +14,16 @@ def test_judge_calls_dont_persist_a_visible_session():
     assert "--ephemeral" in search.JUDGE_CMD["codex"]
 
 
+def test_step_judge_allows_tools_without_an_approval_ui():
+    """Regression test: the judge runs non-interactively with no approval
+    UI, where step falls back to *deny* -- one incidental tool call then
+    blocks and takes the whole batch down (exit 1), losing its matches.
+    Real: `ai search B_NFC_LOCATION_27` lost 3 of 7 batches this way."""
+    step_cmd = search.JUDGE_CMD["step"]
+    assert "--non-interactive-approval" in step_cmd
+    assert step_cmd[step_cmd.index("--non-interactive-approval") + 1] == "allow"
+
+
 def test_judge_call_has_timeout(monkeypatch):
     calls = []
 
