@@ -5,6 +5,7 @@ import calendar
 import codecs
 import glob
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -2087,6 +2088,21 @@ def relative_time(ts):
     return f"{int(delta / 86400)}d ago"
 
 
+# A Windows-written absolute path: drive letter + separator, or a UNC share.
+WIN_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _windows_path_key(path):
+    """Comparable form of a Windows-written path on a non-Windows host.
+
+    ntpath.normpath unifies the separators, collapses `.`/`..` and drops a
+    trailing one, then the case fold -- Windows compares paths
+    case-insensitively, and os.path.normcase only folds case when *this*
+    machine is Windows, so on POSIX it would miss "C:\\Work\\proj" vs
+    "c:/work/proj" outright."""
+    return ntpath.normpath(path).lower()
+
+
 def _same_path(a, b):
     """True when two recorded cwds name the same directory.
 
@@ -2094,9 +2110,16 @@ def _same_path(a, b):
     ways: macOS reports /var where a tool stored /private/var, Windows paths
     differ in case, and a trailing separator is easy to add. Any of those
     made `ai sessions --cwd` return nothing -- including, for a while, every
-    codex session at once."""
+    codex session at once.
+
+    Windows-style paths compare textually even on a POSIX host: a session
+    store can be synced between machines, and here normcase is a no-op while
+    realpath resolves both sides against *this* machine's cwd (yielding
+    "/…/C:\\Work\\proj" vs "/…/c:/work/proj") -- neither ever matches."""
     if not isinstance(a, str) or not isinstance(b, str):
         return False
+    if os.name != "nt" and (WIN_PATH_RE.match(a) or WIN_PATH_RE.match(b)):
+        return _windows_path_key(a) == _windows_path_key(b)
     try:
         left, right = os.path.normcase(os.path.realpath(a)), os.path.normcase(os.path.realpath(b))
     except OSError:

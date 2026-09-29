@@ -92,7 +92,12 @@ def test_cwd_filter_compares_paths_not_strings(monkeypatch, tmp_path):
     separator: all the same directory, and raw equality dropped them all."""
     # a trailing separator, and the same directory reached through a symlink
     assert sessions._same_path("/a/b", "/a/b/")
+    # Windows-written cwds compare as Windows would, on any host: case,
+    # separators and a trailing one all ignored, `.` collapsed
     assert sessions._same_path("C:\\Work\\proj", "c:/work/proj")
+    assert sessions._same_path("C:\\Work\\proj\\", "c:/work/./proj")
+    assert sessions._same_path("\\\\srv\\share\\proj", "\\\\SRV\\share\\proj")
+    assert not sessions._same_path("C:\\Work\\proj", "c:/work/other")
     assert not sessions._same_path("/a/b", "/a/c")
     assert not sessions._same_path(None, "/a/b")
     assert not sessions._same_path({"path": "/a"}, "/a")
