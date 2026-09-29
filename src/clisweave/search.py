@@ -106,8 +106,12 @@ CHUNK_SIZE = 100
 
 # A judge CLI can occasionally stop responding (for example while waiting on
 # a network request).  Without a timeout, one stuck chunk keeps the whole
-# search alive forever, even after every other chunk has finished.
-JUDGE_TIMEOUT_SECONDS = 120
+# search alive forever, even after every other chunk has finished.  Kept
+# generous because a judge can legitimately spend a while on a 100-session
+# batch -- it verifies candidates against the live repo, which is several
+# tool calls deep on a busy repo. At 120 the real search over 622 sessions
+# lost batch 3/7 to the clock before the fallback could matter.
+JUDGE_TIMEOUT_SECONDS = 240
 
 # Once the first batch has selected a working judge, the remaining batches
 # can safely fan out without probing an unavailable judge over and over.
