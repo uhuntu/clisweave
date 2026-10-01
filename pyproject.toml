@@ -31,6 +31,7 @@ aim = "clisweave.cli:main"
 clisweave = "clisweave.cli:main"
 aimux = "clisweave.cli:main"
 ai-sessions = "clisweave.sessions:main"
+cb = "clisweave.cb:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

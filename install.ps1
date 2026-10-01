@@ -93,6 +93,12 @@ if (Test-Path $CwPath) {
 } else {
     Write-Launcher "cw" (Join-Path $ScriptDir "bin\ai")
 }
+$CbPath = Join-Path $BinDir "cb.cmd"
+if (Test-Path $CbPath) {
+    Write-Warning "$CbPath already exists; leaving it unchanged"
+} else {
+    Write-Launcher "cb" (Join-Path $ScriptDir "bin\cb")
+}
 Write-Launcher "clisweave" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "aim" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "aimux" (Join-Path $ScriptDir "bin\ai")

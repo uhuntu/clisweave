@@ -104,6 +104,13 @@ else
   link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/cw"
 fi
 
+# `cb` is short enough that something else may already own it -- leave it be
+if [[ -e "$BIN_DIR/cb" || -L "$BIN_DIR/cb" ]]; then
+  echo "Warning: $BIN_DIR/cb already exists; leaving it unchanged" >&2
+else
+  link_or_launcher "$SCRIPT_DIR/bin/cb" "$BIN_DIR/cb"
+fi
+
 for alias_name in clisweave aim aimux; do
   link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/$alias_name"
 done
