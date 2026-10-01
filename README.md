@@ -10,7 +10,7 @@ No daemon, no config file, no build step — just a small Python package (`src/c
 
 ## Install
 
-**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `cw`, `clisweave`, `ai-sessions`, plus the legacy `aim` and `aimux` aliases):
+**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `cw`, `clisweave`, `ai-sessions`, `cb` (see [`cb`](#cb-codebuddy), for CodeBuddy), plus the legacy `aim` and `aimux` aliases):
 
 ```bash
 pip install clisweave
@@ -35,7 +35,7 @@ git clone https://github.com/uhuntu/clisweave.git
 cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
 ```
 
-Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `cw`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` with a warning if it already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
+Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `cw`, `cb`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
 Requires `claude`, `codex`, `kimi` and/or `step` already installed and on `PATH` (only the ones you actually use need to be present).
 
@@ -166,6 +166,33 @@ Titles are best-effort (scanned from the first user message / prompt in each ses
 `kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all four tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
 Pass `--cwd <dir>` to send it somewhere else instead, e.g. `ai resume 2 --cwd /path/to/other-project`. All four tie a session's transcript to whichever directory it first ran in — claude, codex and kimi quietly keep writing to the *original* directory's log (confirmed by testing `claude --resume` from an unrelated directory: nothing was written under the new one), and step refuses outright, stopping to ask `Fork this session into current directory? [y/N]` (under `-p` there is no TTY to answer it: exit 1, nothing written) — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `ai resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `ai <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
+
+## `cb`: CodeBuddy
+
+CodeBuddy ships as a CLI, a VS Code extension and a desktop app, and the three keep their own, unrelated stores. `cb` lists all of them as one table. It is a separate command rather than a fifth tool for `ai` because `ai`'s tools can all be resumed and handed to one another, and two of CodeBuddy's three clients cannot: they keep no transcript.
+
+```bash
+cb                     # recent sessions from all three clients (same as `cb sessions`)
+cb full                # no cutoff
+cb --client cli        # one client: cli, vscode or desktop (repeatable)
+cb --cwd .             # only sessions started in the current directory
+cb --cluster           # rows that are probably one conversation split across clients
+cb resume 3            # row 3 of the last `cb` listing
+cb resume cli:01a0f6ee # by client and id prefix
+cb resume 3 --dry-run  # show what would run, touch nothing
+```
+
+| Client | Store | Title | `cb resume` |
+|---|---|---|---|
+| cli | `~/.codebuddy/projects/<slug>/<sessionId>.jsonl` | the session's AI title, else the first prompt | `codebuddy -r <id>` in the session's directory |
+| desktop | `codebuddy-sessions.vscdb` (sqlite) in the app's data directory | stored | launches the app on the session's folder |
+| vscode | `tencent-cloud.coding-copilot` extension storage | none stored — the first todo stands in | opens the workspace (`--history` also opens the extension's history panel) |
+
+Only the CLI can really resume. The extension contributes no command that opens one conversation, and the desktop app registers `codebuddy://` but defines no route for a session, so for those two `cb resume` gets you to the right folder and tells you so. A `--to cli` handoff of such a row is refused: with no transcript there is nothing to hand over, only a new empty session.
+
+The three clients mint unrelated ids, so nothing proves two rows are the same conversation. `--cluster` guesses from the directory and the time (`--window`, default 120 minutes) and never puts two rows of one client in the same group. Treat it as a hint.
+
+`cb` numbers rows with its own cache, so a listing from `ai` never becomes `cb resume <N>` or the reverse. The Windows layout is the one checked against a real install; the macOS and Linux locations of the VS Code and desktop stores follow Electron's convention and are unverified.
 
 ## Development
 
