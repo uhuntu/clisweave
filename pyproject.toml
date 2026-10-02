@@ -36,3 +36,34 @@ cb = "clisweave.cb:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+# The codebase was written before ruff existed, and the tolerant readers
+# (read_jsonl, the openclaw-unwrap, the case-folder line scanner, etc.)
+# are *designed* to swallow exceptions -- so ruff's defaults fight the
+# project's actual contract. Keep the high-signal rules only; deliberately
+# skip the ones this codebase violates on purpose (see .github/workflows/lint.yml).
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+# F811: redefined-while-unused -- would have caught the duplicate
+#   harden_console_output() that this commit series just removed.
+# E9:   runtime syntax errors (SyntaxError, ImportError, etc.).
+#
+# Deliberately NOT enabled (each fights the project's design on purpose):
+#   BLE001   bare ``except Exception`` -- the tolerant JSONL reader
+#            deliberately swallows parse failures on dirty lines.
+#   S110/S112 except-pass / except-continue -- the same tolerant readers
+#            and best-effort filesystem sweeps.
+#   PLW1510  subprocess without check -- `exec_or_die` wraps interactive
+#            CLIs by design; the exit code is the child's, not ours.
+#   UP031    printf-style %-formatting -- used throughout, intentionally.
+#   FURB167  ``re.I`` vs ``re.IGNORECASE`` -- cosmetic.
+#   I        isort (I001) -- not noisy against ``src/`` today, but adding
+#            it would push an autofix PR across many files; revisit when
+#            a follow-up wants to absorb that churn.
+#   F401     unused-import -- many are intentional re-exports documented
+#            in each module's docstring (cli.py / search.py / tests reach
+#            them as ``sessions.<name>``).
+select = ["F811", "E9"]
