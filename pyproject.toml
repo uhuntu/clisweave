@@ -5,15 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clisweave"
 version = "0.1.2"
-description = "Unified CLI wrapper + cross-tool session manager for Claude Code, Codex CLI, and Kimi CLI"
+description = "Unified CLI wrapper + cross-tool session manager for Claude Code, Codex CLI, Kimi CLI, step, and CodeBuddy"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Hunt Lin", email = "uhuntu@gmail.com" }]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
+    "Operating System :: Microsoft :: Windows",
     "Environment :: Console",
 ]
 
