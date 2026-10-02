@@ -1,4 +1,4 @@
-"""ai - unified wrapper for the claude / codex / kimi / step CLIs.
+"""cw - unified wrapper for the claude / codex / kimi / step CLIs.
 Normalizes a handful of common flags across the four tools and passes
 everything else straight through.
 """
@@ -15,14 +15,14 @@ TOOLS = ("claude", "codex", "kimi", "step")
 # and the examples named three tools when there were four, and "asks claude"
 # kept naming a judge that was no longer the default. Nothing here spells out
 # something the code can say.
-USAGE = f"""Usage: ai <{'|'.join(TOOLS)}> [common-options] [prompt] [-- extra native args]
-       ai sessions [--tool T] [--limit N|all] [--cwd] [--all]
-       ai full [--tool T] [--cwd] [--all]
-       ai search <topic> [--tool {'|'.join(TOOLS)}] [--judge {'|'.join(search.JUDGE_CMD)}] [--why] [--all]
-       ai resume <{'|'.join(TOOLS)}|N> [session-id-or-prefix] [--cwd <dir>]
-       ai <N> <{'|'.join(TOOLS)}> [native-options]
-       ai update [tools|all]
-       ai stats [--tool T]
+USAGE = f"""Usage: cw <{'|'.join(TOOLS)}> [common-options] [prompt] [-- extra native args]
+       cw sessions [--tool T] [--limit N|all] [--cwd] [--all]
+       cw full [--tool T] [--cwd] [--all]
+       cw search <topic> [--tool {'|'.join(TOOLS)}] [--judge {'|'.join(search.JUDGE_CMD)}] [--why] [--all]
+       cw resume <{'|'.join(TOOLS)}|N> [session-id-or-prefix] [--cwd <dir>]
+       cw <N> <{'|'.join(TOOLS)}> [native-options]
+       cw update [tools|all]
+       cw stats [--tool T]
 
 Common options (translated per-tool, all optional):
   -p, --print              Non-interactive: print response and exit
@@ -35,7 +35,7 @@ Common options (translated per-tool, all optional):
 Anything after a literal `--`, or any flag this wrapper doesn't recognize,
 is passed through unchanged to the underlying CLI.
 
-The listing (`ai`, `ai sessions`) marks the rows belonging to the current
+The listing (`cw`, `cw sessions`) marks the rows belonging to the current
 directory and shows each session's turn count. Color is used only when the
 output is a terminal: NO_COLOR, TERM=dumb and CLISWEAVE_COLOR=never disable
 it, CLISWEAVE_COLOR=always forces it.
@@ -47,28 +47,28 @@ Per-tool --yolo mapping:
   step    -> --approval-mode auto + --non-interactive-approval allow
 
 Examples:
-  ai claude -p "summarize this repo"
-  ai codex -p -m o3 "fix the failing test"
-  ai kimi -c
-  ai step -p "summarize this repo"
-  ai claude -- --agent reviewer "look at this diff"
-  ai sessions --limit 10
-  ai sessions --limit all   # same as `ai full`
-  ai full                   # everything, no default 15-row cutoff
-  ai resume kimi 97946bc7
-  ai resume 3         # resume row 3 from the last `ai`/`ai sessions` listing
-  ai resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
-  ai 3 codex          # continue row 3 in a new Codex session with context
-  ai update           # update clisweave itself
-  ai update tools     # update claude, codex, kimi, and step (whichever are installed)
-  ai update all       # both of the above
-  ai search "the nfc frequency lock issue"   # asks {search.DEFAULT_JUDGE} (the default judge)
-  ai search "katago" --judge codex   # judge with a different tool
-  ai search "katago" --why           # each hit's reason, in full
-  ai stats            # session counts per tool, oldest/newest, top directories
+  cw claude -p "summarize this repo"
+  cw codex -p -m o3 "fix the failing test"
+  cw kimi -c
+  cw step -p "summarize this repo"
+  cw claude -- --agent reviewer "look at this diff"
+  cw sessions --limit 10
+  cw sessions --limit all   # same as `cw full`
+  cw full                   # everything, no default 15-row cutoff
+  cw resume kimi 97946bc7
+  cw resume 3         # resume row 3 from the last `cw`/`cw sessions` listing
+  cw resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
+  cw 3 codex          # continue row 3 in a new Codex session with context
+  cw update           # update clisweave itself
+  cw update tools     # update claude, codex, kimi, and step (whichever are installed)
+  cw update all       # both of the above
+  cw search "the nfc frequency lock issue"   # asks {search.DEFAULT_JUDGE} (the default judge)
+  cw search "katago" --judge codex   # judge with a different tool
+  cw search "katago" --why           # each hit's reason, in full
+  cw stats            # session counts per tool, oldest/newest, top directories
 """
 
-# Everything `ai <x>` accepts that is not a tool. The unknown-tool error names
+# Everything `cw <x>` accepts that is not a tool. The unknown-tool error names
 # this list, and the test asserts it matches what main() actually dispatches,
 # so adding a subcommand cannot leave the message stale the way it was when
 # `stats` and `step` were both missing from it.
@@ -76,7 +76,7 @@ SUBCOMMANDS = ("sessions", "full", "search", "resume", "update", "stats")
 
 
 class UsageError(Exception):
-    """Bad arguments to `ai <tool> ...`. Caught by main() and reported
+    """Bad arguments to `cw <tool> ...`. Caught by main() and reported
     cleanly; kept separate from sys.exit so build_command stays a pure,
     testable function."""
 
@@ -219,14 +219,14 @@ def main():
         sessions.cmd_list(rest)
         return
     if tool == "full":
-        # `ai full` is shorthand for `ai sessions --limit all`.
+        # `cw full` is shorthand for `cw sessions --limit all`.
         sessions.cmd_list(["--limit", "all", *rest])
         return
     if tool == "resume":
         sessions.cmd_resume(rest)
         return
     if sessions.ROW_NUMBER_RE.match(tool):
-        # `ai <N>` is shorthand for `ai resume <N>`.
+        # `cw <N>` is shorthand for `cw resume <N>`.
         sessions.cmd_resume(argv)
         return
     if tool == "update":
@@ -242,7 +242,7 @@ def main():
     try:
         cmd = build_command(tool, rest)
     except UsageError as e:
-        print(f"ai: {e}", file=sys.stderr)
+        print(f"cw: {e}", file=sys.stderr)
         sys.exit(1)
 
     sessions.exec_or_die(cmd)

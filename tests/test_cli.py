@@ -107,7 +107,7 @@ def test_help_lists_every_tool_and_every_judge():
     the default -- a literal string, describing lists that live in TOOLS and
     JUDGE_CMD. USAGE is built from both now; this holds the printed line to
     them the way the test above holds the unknown-tool message to main()."""
-    search_line = next(line for line in cli.USAGE.splitlines() if "ai search" in line)
+    search_line = next(line for line in cli.USAGE.splitlines() if "cw search" in line)
     tools_shown = re.search(r"\[--tool ([^\]]+)\]", search_line)
     judges_shown = re.search(r"\[--judge ([^\]]+)\]", search_line)
     assert tools_shown and judges_shown, search_line

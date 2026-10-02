@@ -15,7 +15,7 @@ Only the CLI keeps a transcript. The other two keep metadata, so their rows
 can be listed but not resumed or handed off -- `cb resume` says so rather
 than starting a fresh, empty session under a resume's name.
 
-`cb` is deliberately separate from `ai`: `ai` weaves tools whose sessions can
+`cb` is deliberately separate from `cw`: `cw` weaves tools whose sessions can
 all be resumed and handed to one another; these three cannot.
 """
 import argparse
@@ -60,7 +60,7 @@ VS_TODOS = os.path.join(VS_ROOT, "todos")
 VS_CHANGES = os.path.join(VS_ROOT, "file-changes")
 DESKTOP_DB = os.path.join(APP_SUPPORT, "CodeBuddy", "codebuddy-sessions.vscdb")
 
-# Its own cache: `ai` and `cb` number different rows, and a listing from one
+# Its own cache: `cw` and `cb` number different rows, and a listing from one
 # must never become the other's `resume <N>`.
 LIST_CACHE_FILE = os.path.join(HOME, ".cache", "clisweave", "cb_last_list.json")
 
@@ -387,7 +387,7 @@ def collect(clients=None):
 # ---------------------------------------------------------------- cache
 
 def write_list_cache(rows):
-    """Atomic for the same reason `ai`'s is: a truncated cache reads back as
+    """Atomic for the same reason `cw`'s is: a truncated cache reads back as
     'nothing listed yet' for a listing that plainly happened."""
     try:
         os.makedirs(os.path.dirname(LIST_CACHE_FILE), exist_ok=True)

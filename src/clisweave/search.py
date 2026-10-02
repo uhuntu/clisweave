@@ -1,4 +1,4 @@
-"""ai search - find past sessions relevant to a topic.
+"""cw search - find past sessions relevant to a topic.
 
 Two complementary passes over the same candidate list:
 
@@ -67,7 +67,7 @@ else:
 JUDGE_CMD = {
     # --no-session-persistence / --ephemeral: the judge call's own prompt
     # (the whole candidate list) would otherwise get saved as a real,
-    # visible session -- showing up in `ai`/`ai full` with the raw prompt
+    # visible session -- showing up in `cw`/`cw full` with the raw prompt
     # text as its title, polluting the very listing this command reads.
     # kimi has no equivalent flag, so `--judge kimi` will still leak one.
     "claude": ["claude", "-p", "--no-session-persistence"],
@@ -81,7 +81,7 @@ JUDGE_CMD = {
     # --non-interactive-approval allow: this judge is spawned with no
     # approval UI, and step falls back to *deny* there -- so an incidental
     # tool call (the judge verifying a candidate against the live repo)
-    # is blocked and takes the whole batch down with it. Real cost: `ai
+    # is blocked and takes the whole batch down with it. Real cost: `cw
     # search B_NFC_LOCATION_27` lost 3 of 7 batches to exactly that, with
     # "Blocked run_command" where the matches should have been. Same pair
     # cli.py's --yolo attaches to step for the same reason.
@@ -160,10 +160,10 @@ class JudgeError(Exception):
 def gather_candidates(tool_filter, show_all=False):
     """Every session the search should consider, newest first.
 
-    show_all is `ai search --all` and means the same thing it does for
-    `ai sessions` -- include archived sessions too. It used to be accepted by
+    show_all is `cw search --all` and means the same thing it does for
+    `cw sessions` -- include archived sessions too. It used to be accepted by
     cmd_search and then dropped here, so a session you could list with
-    `ai sessions --all` was unreachable by `ai search --all` in both the
+    `cw sessions --all` was unreachable by `cw search --all` in both the
     exact and the semantic pass."""
     light = []
     if tool_filter in (None, "claude"):
@@ -295,11 +295,11 @@ def _call_judge(judge, prompt):
             preexec_fn=_die_with_parent,
         )
     except FileNotFoundError:
-        print(f"ai search: '{judge_cmd[0]}' not found on PATH", file=sys.stderr)
+        print(f"cw search: '{judge_cmd[0]}' not found on PATH", file=sys.stderr)
         raise JudgeError(127)
     except subprocess.TimeoutExpired:
         print(
-            f"ai search: {judge_cmd[0]} timed out after "
+            f"cw search: {judge_cmd[0]} timed out after "
             f"{JUDGE_TIMEOUT_SECONDS} seconds",
             file=sys.stderr,
         )
@@ -312,7 +312,7 @@ def _call_judge(judge, prompt):
         # exact-matches-only, which is every other judge failure's fate.
         # errors="replace" above covers the decode case, but the pipe can
         # still come back as None without it.
-        print(f"ai search: could not run '{judge_cmd[0]}': {exc}", file=sys.stderr)
+        print(f"cw search: could not run '{judge_cmd[0]}': {exc}", file=sys.stderr)
         raise JudgeError(127)
 
 
@@ -426,7 +426,7 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
             # stdout can legitimately be None (a judge that died mid-write,
             # or an unreadable pipe); parse_numbered_reasons needs a string.
             return parse_numbered_reasons(result.stdout or "", n), j
-        print(f"ai search: {j} exited with an error ({label})", file=sys.stderr)
+        print(f"cw search: {j} exited with an error ({label})", file=sys.stderr)
         if result.stdout:
             print(result.stdout, file=sys.stderr)
         if result.stderr:
@@ -442,7 +442,7 @@ def run_judge_with_fallback(prompt, n, judge, judge_explicit, label):
                 result = _call_judge(j, prompt)
                 if result.returncode == 0:
                     return parse_numbered_reasons(result.stdout or "", n), j
-                print(f"ai search: {j} exited with an error again ({label})", file=sys.stderr)
+                print(f"cw search: {j} exited with an error again ({label})", file=sys.stderr)
         if _is_session_limit(result) or _is_auth_failure(result) or _is_rate_limited(result):
             # Every judge has its own session limit and its own way of saying
             # a login expired, and either makes it unusable for the rest of
@@ -473,20 +473,20 @@ def cmd_search(argv):
         a = argv[i]
         if a == "--tool":
             if i + 1 >= len(argv):
-                print("ai search: --tool requires a value", file=sys.stderr)
+                print("cw search: --tool requires a value", file=sys.stderr)
                 sys.exit(1)
             tool_filter = argv[i + 1]
             if tool_filter not in sessions.TOOLS:
-                print(f"ai search: --tool must be one of {', '.join(sessions.TOOLS)}", file=sys.stderr)
+                print(f"cw search: --tool must be one of {', '.join(sessions.TOOLS)}", file=sys.stderr)
                 sys.exit(1)
             i += 2
         elif a == "--judge":
             if i + 1 >= len(argv):
-                print("ai search: --judge requires a value", file=sys.stderr)
+                print("cw search: --judge requires a value", file=sys.stderr)
                 sys.exit(1)
             judge = argv[i + 1]
             if judge not in JUDGE_CMD:
-                print(f"ai search: --judge must be one of {', '.join(JUDGE_CMD)}", file=sys.stderr)
+                print(f"cw search: --judge must be one of {', '.join(JUDGE_CMD)}", file=sys.stderr)
                 sys.exit(1)
             judge_explicit = True
             i += 2
@@ -502,7 +502,7 @@ def cmd_search(argv):
 
     topic = " ".join(topic_parts).strip()
     if not topic:
-        print(f"Usage: ai search <topic> [--tool {'|'.join(sessions.TOOLS)}] [--judge {'|'.join(JUDGE_CMD)}] [--why] [--all]", file=sys.stderr)
+        print(f"Usage: cw search <topic> [--tool {'|'.join(sessions.TOOLS)}] [--judge {'|'.join(JUDGE_CMD)}] [--why] [--all]", file=sys.stderr)
         sys.exit(1)
 
     candidates = gather_candidates(tool_filter, show_all)
@@ -511,7 +511,7 @@ def cmd_search(argv):
         return
 
     rows = [sessions.resolve_row(r) for r in candidates]
-    # Same exclusion as `ai sessions`: a session a tool started for itself
+    # Same exclusion as `cw sessions`: a session a tool started for itself
     # isn't a conversation, and its content is other sessions' text -- which
     # makes it a magnet for spurious matches. This also catches copied
     # review transcripts (a codex approval review's title collapses to
@@ -568,7 +568,7 @@ def cmd_search(argv):
             chunk_reasons[0] = matched_reasons
         except JudgeError as e:
             if exact_ids:
-                print("ai search: semantic search failed; showing exact matches only", file=sys.stderr)
+                print("cw search: semantic search failed; showing exact matches only", file=sys.stderr)
             else:
                 sys.exit(e.code)
     else:
@@ -599,12 +599,12 @@ def cmd_search(argv):
                     failures += 1
         if failures == n_chunks:
             if exact_ids:
-                print(f"ai search: all {n_chunks} semantic batches failed; showing exact matches only", file=sys.stderr)
+                print(f"cw search: all {n_chunks} semantic batches failed; showing exact matches only", file=sys.stderr)
             else:
-                print(f"ai search: all {n_chunks} batches failed", file=sys.stderr)
+                print(f"cw search: all {n_chunks} batches failed", file=sys.stderr)
                 sys.exit(1)
         if failures:
-            print(f"ai search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
+            print(f"cw search: {failures}/{n_chunks} batches failed; showing partial results", file=sys.stderr)
 
     # The judge lists its strongest hit first; that order is the only ranking
     # available (it is the one thing here that actually read the content), so
@@ -638,7 +638,7 @@ def cmd_search(argv):
         hidden = len(semantic) - SEMANTIC_ROWS_SHOWN
         semantic = semantic[:SEMANTIC_ROWS_SHOWN]
 
-    # One cache write for the union in printed order, so `ai resume <N>`
+    # One cache write for the union in printed order, so `cw resume <N>`
     # numbers stay valid across both sections.
     sessions.write_list_cache(
         [{"tool": tool, "id": full_id} for tool, full_id, *_ in exact_rows + semantic]
@@ -654,4 +654,4 @@ def cmd_search(argv):
         )
     if hidden:
         noun = "weaker match" if hidden == 1 else "weaker matches"
-        print(f"... and {hidden} {noun} not shown -- `ai search {topic!r} --all` lists every hit.")
+        print(f"... and {hidden} {noun} not shown -- `cw search {topic!r} --all` lists every hit.")

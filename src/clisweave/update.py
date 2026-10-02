@@ -1,4 +1,4 @@
-"""ai update - update clisweave itself, and optionally the underlying
+"""cw update - update clisweave itself, and optionally the underlying
 claude/codex/kimi/step CLIs, which each ship their own self-update command."""
 import os
 import shutil
@@ -9,7 +9,7 @@ TOOL_UPDATE_CMD = {
     "claude": ["claude", "update"],
     "codex": ["codex", "update"],
     # --yes keeps kimi's picker ("Install update now / Continue with current
-    # version") from being the thing that fails `ai update`: without a friendly
+    # version") from being the thing that fails `cw update`: without a friendly
     # TTY the selection aborts and the whole update errors out ("This operation
     # was aborted"). Confirmed live 2026-09-24.
     "kimi": ["kimi", "update", "--yes"],
@@ -67,8 +67,8 @@ def detect_repo_dir(package_dir):
 
     `.git` is checked with exists, not isdir: a git worktree, a submodule and
     a `--separate-git-dir` clone all carry `.git` as a *file*. Taking the pip
-    branch for those silently pointed `ai update` at PyPI instead of the
-    clone the `ai` launcher actually runs -- and reported success."""
+    branch for those silently pointed `cw update` at PyPI instead of the
+    clone the `cw` launcher actually runs -- and reported success."""
     repo_candidate = os.path.dirname(os.path.dirname(os.path.abspath(package_dir)))
     if os.path.exists(os.path.join(repo_candidate, ".git")):
         return repo_candidate
@@ -81,7 +81,7 @@ def run_update_command(argv, env=None):
     A Windows npm/global shim (claude.cmd, codex.cmd, kimi.cmd) passes
     `shutil.which` but cannot be spawned directly -- PATH search only appends
     .exe -- so it goes through the shell. Either way a spawn failure becomes
-    this tool's exit code rather than an exception that ends `ai update
+    this tool's exit code rather than an exception that ends `cw update
     tools` before the remaining tools are even attempted."""
     command = list(argv)
     if os.name == "nt":
@@ -91,10 +91,10 @@ def run_update_command(argv, env=None):
     try:
         return subprocess.run(command, env=env).returncode
     except OSError as exc:
-        print(f"ai update: could not run {argv[0]}: {exc}", file=sys.stderr)
+        print(f"cw update: could not run {argv[0]}: {exc}", file=sys.stderr)
         return 127
     except ValueError as exc:
-        print(f"ai update: invalid command for {argv[0]}: {exc}", file=sys.stderr)
+        print(f"cw update: invalid command for {argv[0]}: {exc}", file=sys.stderr)
         return 127
 
 
@@ -162,7 +162,7 @@ def cmd_update(argv):
     elif argv == ["all"]:
         target = "all"
     else:
-        print(f"ai update: unexpected argument '{argv[0]}' (expected 'tools' or 'all')", file=sys.stderr)
+        print(f"cw update: unexpected argument '{argv[0]}' (expected 'tools' or 'all')", file=sys.stderr)
         sys.exit(1)
 
     worst = 0

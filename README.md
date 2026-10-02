@@ -10,7 +10,7 @@ No daemon, no config file, no build step — just a small Python package (`src/c
 
 ## Install
 
-**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `ai`, `cw`, `clisweave`, `ai-sessions`, `cb` (see [`cb`](#cb-codebuddy), for CodeBuddy), plus the legacy `aim` and `aimux` aliases):
+**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `cw`, `clisweave`, `ai-sessions`, `cb` (see [`cb`](#cb-codebuddy), for CodeBuddy), plus the legacy `ai`, `aim` and `aimux` aliases — `ai` is kept only so existing scripts keep working, and is too generic a name to rely on):
 
 ```bash
 pip install clisweave
@@ -35,27 +35,27 @@ git clone https://github.com/uhuntu/clisweave.git
 cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
 ```
 
-Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `ai`, `cw`, `cb`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
+Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `cw`, `cb`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases (an existing `ai` link is left working, but a fresh install no longer creates one) in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
 Requires `claude`, `codex`, `kimi` and/or `step` already installed and on `PATH` (only the ones you actually use need to be present).
 
-> **Windows note:** running the curl one-liner from PowerShell/cmd (rather than Git Bash) can invoke the WSL `bash` launcher by mistake instead of Git's — use `irm` above, or run curl from Git Bash directly. `install.sh` also copes if Git Bash lacks symlink privilege (falls back to a generated launcher instead of a broken copy) or `python3` on `PATH` is the Microsoft Store's no-op stub (probes `python`/`py -3` instead). Files installed by `install.sh` are still extensionless with a shebang line, though, which PowerShell can't execute directly — `install.ps1`'s `.cmd` launchers don't have that problem. If you stick with `install.sh`, call `ai` from Git Bash instead, or add a function to your PowerShell `$PROFILE`:
+> **Windows note:** running the curl one-liner from PowerShell/cmd (rather than Git Bash) can invoke the WSL `bash` launcher by mistake instead of Git's — use `irm` above, or run curl from Git Bash directly. `install.sh` also copes if Git Bash lacks symlink privilege (falls back to a generated launcher instead of a broken copy) or `python3` on `PATH` is the Microsoft Store's no-op stub (probes `python`/`py -3` instead). Files installed by `install.sh` are still extensionless with a shebang line, though, which PowerShell can't execute directly — `install.ps1`'s `.cmd` launchers don't have that problem. If you stick with `install.sh`, call `cw` from Git Bash instead, or add a function to your PowerShell `$PROFILE`:
 > ```powershell
-> function ai { & "C:\Path\To\python.exe" "$HOME\.local\share\clisweave\bin\ai" @args }
+> function cw { & "C:\Path\To\python.exe" "$HOME\.local\share\clisweave\bin\cw" @args }
 > ```
 
 
 ## Update
 
 ```bash
-ai update        # update clisweave itself
-ai update tools  # update claude, codex, kimi, and step (whichever are installed)
-ai update all    # both
+cw update        # update clisweave itself
+cw update tools  # update claude, codex, kimi, and step (whichever are installed)
+cw update all    # both
 ```
 
-`ai update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
+`cw update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
 
-`ai update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
+`cw update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
 
 Two fallbacks exist for flaky networks, both confirmed live on 2026-09-24:
 
@@ -71,64 +71,64 @@ Equivalent manual commands for updating clisweave itself, if you'd rather:
 ## Usage
 
 ```bash
-ai                          # recent sessions across all four tools (same as `ai sessions`)
-ai claude -p "prompt"       # -> claude -p "prompt"
-ai codex -p -m o3 "prompt"  # -> codex exec -m o3 "prompt"
-ai kimi -c                  # -> kimi -c
-ai step -p "summarize"      # -> step -p "summarize"
+cw                          # recent sessions across all four tools (same as `cw sessions`)
+cw claude -p "prompt"       # -> claude -p "prompt"
+cw codex -p -m o3 "prompt"  # -> codex exec -m o3 "prompt"
+cw kimi -c                  # -> kimi -c
+cw step -p "summarize"      # -> step -p "summarize"
 
-ai sessions --limit 10      # list recent sessions, all tools
-ai sessions --limit all     # no cutoff -- same as `ai full`
-ai full                     # shorthand for `ai sessions --limit all`
-ai sessions --tool codex    # filter to one tool
-ai sessions --cwd           # only sessions started in the current directory
-ai sessions --all           # include archived sessions and ones a tool started for itself
+cw sessions --limit 10      # list recent sessions, all tools
+cw sessions --limit all     # no cutoff -- same as `cw full`
+cw full                     # shorthand for `cw sessions --limit all`
+cw sessions --tool codex    # filter to one tool
+cw sessions --cwd           # only sessions started in the current directory
+cw sessions --all           # include archived sessions and ones a tool started for itself
 
-ai resume kimi 97946bc7     # resume by short id / prefix (resolved against real session ids)
-ai resume claude            # no id -> tool's own interactive picker
-ai resume 3                 # resume row 3 from the last `ai`/`ai sessions` listing
-ai 3 codex                  # hand row 3's context to a new Codex session
+cw resume kimi 97946bc7     # resume by short id / prefix (resolved against real session ids)
+cw resume claude            # no id -> tool's own interactive picker
+cw resume 3                 # resume row 3 from the last `cw`/`cw sessions` listing
+cw 3 codex                  # hand row 3's context to a new Codex session
 
-ai search "the nfc frequency lock issue"   # find sessions relevant to a topic
-ai search "katago" --tool claude           # restrict the candidates to one tool
-ai search "..." --judge kimi               # use a different model to judge relevance
-ai search "..." --judge step                # ... or step
-ai search "..." --why                      # print each hit's reason in full, on its own line
-ai search "..." --all                      # list every hit, not just the strongest 10
+cw search "the nfc frequency lock issue"   # find sessions relevant to a topic
+cw search "katago" --tool claude           # restrict the candidates to one tool
+cw search "..." --judge kimi               # use a different model to judge relevance
+cw search "..." --judge step                # ... or step
+cw search "..." --why                      # print each hit's reason in full, on its own line
+cw search "..." --all                      # list every hit, not just the strongest 10
 
-ai stats                    # session counts per tool, oldest/newest, top directories
-ai stats --tool claude      # stats for one tool only
+cw stats                    # session counts per tool, oldest/newest, top directories
+cw stats --tool claude      # stats for one tool only
 ```
 
-Sessions a tool started for itself are left out of `ai sessions` and `ai search`: Codex's command-approval reviews (one per command it asks you to approve), step's own `subagent-…` sessions, and `ai search`'s own judge runs. None of them is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`ai resume codex <id>`), and `ai sessions --all` lists them anyway.
+Sessions a tool started for itself are left out of `cw sessions` and `cw search`: Codex's command-approval reviews (one per command it asks you to approve), step's own `subagent-…` sessions, and `cw search`'s own judge runs. None of them is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`cw resume codex <id>`), and `cw sessions --all` lists them anyway.
 
-Every `ai`/`ai sessions` listing is numbered and cached, so `ai resume <N>` is usually the fastest way in: run `ai`, glance at the row you want, `ai resume 3`. The cache is just the last listing you saw — it's overwritten by the next `ai sessions` call and doesn't try to detect if the underlying sessions changed since.
+Every `cw`/`cw sessions` listing is numbered and cached, so `cw resume <N>` is usually the fastest way in: run `cw`, glance at the row you want, `cw resume 3`. The cache is just the last listing you saw — it's overwritten by the next `cw sessions` call and doesn't try to detect if the underlying sessions changed since.
 
 ### What the listing shows
 
-One table: the row number, the tool, how long ago the session ran, its id, the directory it belongs to, and how many turns it holds. `▸` (or `>` on a console that cannot draw it) marks the rows whose directory is the one you are standing in — the question you usually have when you type `ai` inside a project.
+One table: the row number, the tool, how long ago the session ran, its id, the directory it belongs to, and how many turns it holds. `▸` (or `>` on a console that cannot draw it) marks the rows whose directory is the one you are standing in — the question you usually have when you type `cw` inside a project.
 
 Under each row, dim, is where that session left off — the last thing anyone actually said in it. A title says where a conversation *started* ("fix the nfc lock"); the line under it says where it got to, which is the difference between a table and an answer to "where was I?". A trailing system reminder or a pasted log is skipped for the real last words, and a one-turn session shows nothing under its row rather than repeating its title.
 
-The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CLISWEAVE_COLOR=never`; `CLISWEAVE_COLOR=always` forces it on (useful for `ai | less -R`).
+The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CLISWEAVE_COLOR=never`; `CLISWEAVE_COLOR=always` forces it on (useful for `cw | less -R`).
 
 On a narrow terminal the directory column shrinks first and the turns column is dropped before the title loses its room. Columns are measured in display width rather than code points, so a title in Chinese keeps the table lined up — and a turn count comes from the user messages each tool records (claude's tool results are not turns).
 
-To switch agents, put the target tool after the row number: `ai 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
+To switch agents, put the target tool after the row number: `cw 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
 
 One exception: kimi cannot open an interactive session with an initial prompt (a bare prompt parses as a subcommand name), so a handoff to it runs the seed as a one-shot `kimi -p` and then automatically resumes the session that run persisted (`kimi -S <id>`), dropping you into the interactive continuation with the summary already in its history. If the seed run fails, nothing is resumed — the error is reported, and you pick up with `kimi -c`.
 
-### How `ai search` works
+### How `cw search` works
 
-`ai search` runs two complementary passes:
+`cw search` runs two complementary passes:
 
 1. **Exact pre-pass** — a case-insensitive scan of conversation text, tool calls, results, and kimi background-task output logs. It ignores session metadata and injected instructions. Short alphabetic queries such as `cra` match whole words, so they do not match `craft` or `crash`; longer queries retain substring matching. Results print under `exact matches` with zero LLM cost.
 
 2. **Semantic pass** — the LLM judge. Titles alone miss a lot — plenty of sessions are titled "hi" or "(no title)", and the relevant sessions may never use your exact words. So each candidate's tool, cwd, title, and a short content snippet go into one prompt, and an LLM (`step -p` by default — which judge leads is a per-machine setting; `--judge claude`, `--judge codex` or `--judge kimi` pick another) picks out the relevant ones. One batched call, not one call per session — with 100+ sessions, calling an LLM separately for each would be far too slow and far too expensive. That also means it costs one real LLM call (tokens, however your `claude`/`codex`/`kimi`/`step` account bills them) every time you run it, and if a judge runs out of session limit or its login expires mid-search, the remaining judges are tried in order. Results print under `semantic matches`.
 
-The exact pass exists because the semantic pass reasons over small *sampled* snippets, and a term that only appears in unsampled messages, tool calls, or past the snippet scan cap is invisible to the judge — a real `aria2c` search missed 4 sessions that grepping found immediately. The two passes union (a session listed as exact is not repeated under semantic), and both count for `ai resume <N>`.
+The exact pass exists because the semantic pass reasons over small *sampled* snippets, and a term that only appears in unsampled messages, tool calls, or past the snippet scan cap is invisible to the judge — a real `aria2c` search missed 4 sessions that grepping found immediately. The two passes union (a session listed as exact is not repeated under semantic), and both count for `cw resume <N>`.
 
-Search skips Codex approval-review sessions whose prompts quote another agent's history. Those copies otherwise appear as duplicate matches. Row numbers continue across the exact and semantic sections, so each displayed number matches `ai resume <N>`.
+Search skips Codex approval-review sessions whose prompts quote another agent's history. Those copies otherwise appear as duplicate matches. Row numbers continue across the exact and semantic sections, so each displayed number matches `cw resume <N>`.
 
 The judge reasons about more than just keyword overlap — e.g. searching "katago" correctly pulled in sessions with generic titles like "hi" or "(no title)" that were run inside the `katago` project directory, which plain text search would have missed entirely.
 
@@ -138,7 +138,7 @@ It must also point at something concrete — a file, command, error, or version 
 
 It has to say *why* each match counts: the judge answers one line per match (`7: upgrades the firmware from A13`) rather than a bare list of numbers, which makes it commit to a link instead of ticking a box. The reason prints as a WHY column beside the hit, clipped to whatever width the terminal has left over, so ten hits stay ten lines. `--why` prints it in full on its own line instead. That column is what makes a hit with a useless title readable: a row titled `Hello` in an `android-vts` directory is a real A13 VTS fix (`A13 VTS NFC HAL OpenAfterOpen fix committed to the A13 SDK`), which nothing else in the row suggests.
 
-### Normalized flags (`ai <tool> ...`)
+### Normalized flags (`cw <tool> ...`)
 
 | Flag | Meaning | claude | codex | kimi | step |
 |---|---|---|---|---|---|
@@ -163,13 +163,13 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 
 Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing. Resuming a codex thread appends a *new* rollout file instead of extending the one it already had, so a single session id can own several; only the newest is read — for the row's timestamp, title, cwd, snippet, and any handoff. A codex fork or subagent thread has no prompt of its own, so it is named after the thread it forked from (`(fork) …`), the way a handoff is named after the session it continues. kimi names its own sessions too, and that name is used when its log holds no text prompt to read — but only when it is a real name, not the `[image]`/`New Session` placeholder it uses until it has one. A message relayed by a bridge (openclaw) behind its `Conversation info: ⟦openclaw:ctx⟧` header is read as what was said after the header, not as the header itself.
 
-`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `ai resume`/`ai <N>` know each session's original directory already (it's the CWD column), so for all four tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
+`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `cw resume`/`cw <N>` know each session's original directory already (it's the CWD column), so for all four tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
-Pass `--cwd <dir>` to send it somewhere else instead, e.g. `ai resume 2 --cwd /path/to/other-project`. All four tie a session's transcript to whichever directory it first ran in — claude, codex and kimi quietly keep writing to the *original* directory's log (confirmed by testing `claude --resume` from an unrelated directory: nothing was written under the new one), and step refuses outright, stopping to ask `Fork this session into current directory? [y/N]` (under `-p` there is no TTY to answer it: exit 1, nothing written) — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `ai resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `ai <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
+Pass `--cwd <dir>` to send it somewhere else instead, e.g. `cw resume 2 --cwd /path/to/other-project`. All four tie a session's transcript to whichever directory it first ran in — claude, codex and kimi quietly keep writing to the *original* directory's log (confirmed by testing `claude --resume` from an unrelated directory: nothing was written under the new one), and step refuses outright, stopping to ask `Fork this session into current directory? [y/N]` (under `-p` there is no TTY to answer it: exit 1, nothing written) — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `cw resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `cw <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
 
 ## `cb`: CodeBuddy
 
-CodeBuddy ships as a CLI, a VS Code extension and a desktop app, and the three keep their own, unrelated stores. `cb` lists all of them as one table. It is a separate command rather than a fifth tool for `ai` because `ai`'s tools can all be resumed and handed to one another, and two of CodeBuddy's three clients cannot: they keep no transcript.
+CodeBuddy ships as a CLI, a VS Code extension and a desktop app, and the three keep their own, unrelated stores. `cb` lists all of them as one table. It is a separate command rather than a fifth tool for `cw` because `cw`'s tools can all be resumed and handed to one another, and two of CodeBuddy's three clients cannot: they keep no transcript.
 
 ```bash
 cb                     # recent sessions from all three clients (same as `cb sessions`)
@@ -192,7 +192,7 @@ Only the CLI can really resume. The extension contributes no command that opens 
 
 The three clients mint unrelated ids, so nothing proves two rows are the same conversation. `--cluster` guesses from the directory and the time (`--window`, default 120 minutes) and never puts two rows of one client in the same group. Treat it as a hint.
 
-`cb` numbers rows with its own cache, so a listing from `ai` never becomes `cb resume <N>` or the reverse. The Windows layout is the one checked against a real install; the macOS and Linux locations of the VS Code and desktop stores follow Electron's convention and are unverified.
+`cb` numbers rows with its own cache, so a listing from `cw` never becomes `cb resume <N>` or the reverse. The Windows layout is the one checked against a real install; the macOS and Linux locations of the VS Code and desktop stores follow Electron's convention and are unverified.
 
 ## Development
 

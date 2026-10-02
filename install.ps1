@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Installs Clisweave's commands (ai, ai-sessions, plus compatibility aliases) as native
+Installs Clisweave's commands (cw, ai-sessions, plus compatibility aliases) as native
 .cmd launchers on PATH -- no Git Bash/WSL/Cygwin required.
 
 Run after cloning:
@@ -22,7 +22,7 @@ $BinDir = if ($env:CLISWEAVE_BIN_DIR) { $env:CLISWEAVE_BIN_DIR } elseif ($env:AI
 # When run via `irm | iex` there's no script file on disk, so $PSCommandPath
 # is empty -- guard the lookup instead of assuming a local clone, same idea
 # as install.sh's BASH_SOURCE[0] check.
-if ($PSCommandPath -and (Test-Path (Join-Path (Split-Path $PSCommandPath -Parent) "bin\ai"))) {
+if ($PSCommandPath -and (Test-Path (Join-Path (Split-Path $PSCommandPath -Parent) "bin\cw"))) {
     $ScriptDir = Split-Path $PSCommandPath -Parent
 } else {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -68,7 +68,7 @@ if (-not $Python) {
 }
 $PyArgsStr = ($Python.Args -join " ")
 
-# ai/ai-sessions are plain Python scripts with a `#!/usr/bin/env python3`
+# cw/ai-sessions are plain Python scripts with a `#!/usr/bin/env python3`
 # shebang, which only Git Bash/WSL/msys know how to run. A .cmd launcher
 # runs natively from both cmd.exe and PowerShell (PATHEXT covers .cmd), and
 # always invokes the *current* file at $Target -- nothing is copied, so a
@@ -85,13 +85,12 @@ function Write-Launcher($Name, $Target) {
     Write-Host "linked $cmdPath -> $Target"
 }
 
-Write-Launcher "ai" (Join-Path $ScriptDir "bin\ai")
 Write-Launcher "ai-sessions" (Join-Path $ScriptDir "bin\ai-sessions")
 $CwPath = Join-Path $BinDir "cw.cmd"
 if (Test-Path $CwPath) {
     Write-Warning "$CwPath already exists; leaving it unchanged"
 } else {
-    Write-Launcher "cw" (Join-Path $ScriptDir "bin\ai")
+    Write-Launcher "cw" (Join-Path $ScriptDir "bin\cw")
 }
 $CbPath = Join-Path $BinDir "cb.cmd"
 if (Test-Path $CbPath) {
@@ -99,9 +98,9 @@ if (Test-Path $CbPath) {
 } else {
     Write-Launcher "cb" (Join-Path $ScriptDir "bin\cb")
 }
-Write-Launcher "clisweave" (Join-Path $ScriptDir "bin\ai")
-Write-Launcher "aim" (Join-Path $ScriptDir "bin\ai")
-Write-Launcher "aimux" (Join-Path $ScriptDir "bin\ai")
+Write-Launcher "clisweave" (Join-Path $ScriptDir "bin\cw")
+Write-Launcher "aim" (Join-Path $ScriptDir "bin\cw")
+Write-Launcher "aimux" (Join-Path $ScriptDir "bin\cw")
 
 $pathDirs = $env:PATH -split ";"
 if ($pathDirs -notcontains $BinDir) {
@@ -110,4 +109,4 @@ if ($pathDirs -notcontains $BinDir) {
     Write-Host "  (then restart your terminal)"
 }
 
-Write-Host "Done. Try: ai --help"
+Write-Host "Done. Try: cw --help"

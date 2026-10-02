@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Symlinks Clisweave's commands (ai, ai-sessions, plus optional aliases)
+# Symlinks Clisweave's commands (cw, ai-sessions, plus optional aliases)
 # into a directory on your PATH.
 #
 # Run after cloning:
@@ -23,7 +23,7 @@ BIN_DIR="${CLISWEAVE_BIN_DIR:-${AIMUX_BIN_DIR:-$HOME/.local/bin}}"
 # unset (not just non-matching) -- guard the lookup instead of dereferencing
 # it directly under `set -u`.
 SOURCE_PATH="${BASH_SOURCE[0]:-}"
-if [[ -n "$SOURCE_PATH" && -f "$(dirname "$SOURCE_PATH")/bin/ai" ]]; then
+if [[ -n "$SOURCE_PATH" && -f "$(dirname "$SOURCE_PATH")/bin/cw" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$SOURCE_PATH")" && pwd)"
 else
   # Not running from inside a clone -- fetch one first, then re-run from there.
@@ -39,7 +39,7 @@ fi
 mkdir -p "$BIN_DIR"
 
 # On Windows, `ln -sf` needs symlink privilege (Developer Mode) or it silently
-# falls back to *copying* the file -- which breaks ai/ai-sessions, since they
+# falls back to *copying* the file -- which breaks cw/ai-sessions, since they
 # locate their package by resolving their own realpath. And the `python3`
 # name on PATH is sometimes a no-op Microsoft Store stub even when a real
 # interpreter is installed as `python`. Detect both and fall back to a tiny
@@ -94,14 +94,13 @@ link_or_launcher() {
   echo "linked $dst -> $src (launcher)"
 }
 
-for name in ai ai-sessions; do
-  link_or_launcher "$SCRIPT_DIR/bin/$name" "$BIN_DIR/$name"
-done
+link_or_launcher "$SCRIPT_DIR/bin/ai-sessions" "$BIN_DIR/ai-sessions"
 
+# `cw` is short enough that something else may already own it -- leave it be
 if [[ -e "$BIN_DIR/cw" || -L "$BIN_DIR/cw" ]]; then
   echo "Warning: $BIN_DIR/cw already exists; leaving it unchanged" >&2
 else
-  link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/cw"
+  link_or_launcher "$SCRIPT_DIR/bin/cw" "$BIN_DIR/cw"
 fi
 
 # `cb` is short enough that something else may already own it -- leave it be
@@ -112,7 +111,7 @@ else
 fi
 
 for alias_name in clisweave aim aimux; do
-  link_or_launcher "$SCRIPT_DIR/bin/ai" "$BIN_DIR/$alias_name"
+  link_or_launcher "$SCRIPT_DIR/bin/cw" "$BIN_DIR/$alias_name"
 done
 
 case ":$PATH:" in
@@ -121,4 +120,4 @@ case ":$PATH:" in
      echo "  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-echo "Done. Try: ai --help"
+echo "Done. Try: cw --help"
