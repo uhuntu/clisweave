@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from clisweave import search, sessions
+from clisweave import common, search, sessions
 
 
 def test_judge_calls_dont_persist_a_visible_session():
@@ -1194,9 +1194,9 @@ def test_cmd_search_all_reaches_archived_kimi_sessions(monkeypatch, tmp_path, ca
     the way to the candidate list."""
     kimi_home = tmp_path / ".kimi-code"
     kimi_home.mkdir()
-    monkeypatch.setattr(sessions, "KIMI_HOME", str(kimi_home))
-    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / "no-codex"))
+    monkeypatch.setattr(common, "KIMI_HOME", str(kimi_home))
+    monkeypatch.setattr(common, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
+    monkeypatch.setattr(common, "CODEX_HOME", str(tmp_path / "no-codex"))
     # no judge call: let every candidate be a literal match
     monkeypatch.setattr(sessions, "literal_matches", lambda cands, topic: list(cands))
     monkeypatch.setattr(search, "run_judge_with_fallback",

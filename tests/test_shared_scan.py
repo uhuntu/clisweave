@@ -15,23 +15,23 @@ import json
 
 import pytest
 
-from clisweave import sessions
+from clisweave import codex, common, sessions
 
 
 @pytest.fixture(autouse=True)
 def _reset_codex_caches():
-    sessions._codex_path_index = None
-    sessions._codex_scan_cache.clear()
+    codex._codex_path_index = None
+    codex._codex_scan_cache.clear()
     yield
-    sessions._codex_path_index = None
-    sessions._codex_scan_cache.clear()
+    codex._codex_path_index = None
+    codex._codex_scan_cache.clear()
 
 
 ROLLOUT = "019ffdbe-1234-7abc-8def-0000000000aa"
 
 
 def write_rollout(monkeypatch, tmp_path, sid, lines):
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(common, "CODEX_HOME", str(tmp_path / ".codex"))
     day_dir = tmp_path / ".codex" / "sessions" / "2026" / "08" / "15"
     day_dir.mkdir(parents=True, exist_ok=True)
     path = day_dir / f"rollout-2026-08-15T10-33-27-{sid}.jsonl"
@@ -74,15 +74,15 @@ def test_the_transcript_is_scanned_once_for_four_readers(monkeypatch, tmp_path):
         scans.append(args)
         return real_scan(*args, **kwargs)
 
-    monkeypatch.setattr(sessions, "_codex_scan", counting_scan)
+    monkeypatch.setattr(codex, "_codex_scan", counting_scan)
     opens = []
-    real_open_text = sessions.open_text
+    real_open_text = common.open_text
 
     def counting_open_text(path):
         opens.append(path)
         return real_open_text(path)
 
-    monkeypatch.setattr(sessions, "open_text", counting_open_text)
+    monkeypatch.setattr(common, "open_text", counting_open_text)
 
     sessions.codex_rollout_title(ROLLOUT)
     opens_after_title = len(opens)
@@ -179,7 +179,7 @@ def test_an_unreadable_rollout_scans_as_empty(monkeypatch, tmp_path):
     def unreadable(p):
         raise PermissionError(p)
 
-    monkeypatch.setattr(sessions, "open_text", unreadable)
+    monkeypatch.setattr(common, "open_text", unreadable)
 
     assert sessions._codex_scan(path) == []
     assert sessions.codex_rollout_snippet(ROLLOUT) == ""

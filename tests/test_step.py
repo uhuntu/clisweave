@@ -13,14 +13,14 @@ import os
 
 import pytest
 
-from clisweave import sessions
+from clisweave import codex, common, sessions, step
 
 SID = "01a0e0e1-2965-79d4-aba9-3dd3bfc0f7cd"
 
 
 @pytest.fixture(autouse=True)
 def _isolate_step_store(monkeypatch, tmp_path):
-    monkeypatch.setattr(sessions, "STEP_SESSIONS", str(tmp_path / "no-step"))
+    monkeypatch.setattr(step, "STEP_SESSIONS", str(tmp_path / "no-step"))
     yield
 
 
@@ -34,7 +34,7 @@ def step_store(tmp_path, cwd_dir, files):
         path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     # a direct assignment, not a monkeypatch: the autouse fixture resets
     # STEP_SESSIONS for every test, so nothing leaks between them
-    sessions.STEP_SESSIONS = str(store)
+    step.STEP_SESSIONS = str(store)
     return store
 
 
@@ -67,15 +67,14 @@ def test_reads_the_store_the_env_var_points_at(monkeypatch, tmp_path):
     """STEP_CODING_AGENT_SESSION_DIR overrides the default location, the same
     way CODEX_HOME is a module constant the tests replace."""
     monkeypatch.setenv("STEP_CODING_AGENT_SESSION_DIR", str(tmp_path / "elsewhere"))
-    monkeypatch.setattr(sessions, "HOME", str(tmp_path))
-    monkeypatch.setattr(sessions, "os", sessions.os)  # no-op, keeps the linter quiet
     import importlib
-    importlib.reload(sessions)
+    importlib.reload(step)
     try:
-        assert sessions.STEP_SESSIONS == str(tmp_path / "elsewhere")
+        assert step.STEP_SESSIONS == str(tmp_path / "elsewhere")
     finally:
-        importlib.reload(sessions)
-        sessions._codex_path_index = None
+        monkeypatch.undo()  # drop the env var before the restoring reload
+        importlib.reload(step)
+        codex._codex_path_index = None
 
 
 def test_light_records_read_id_cwd_and_timestamp_from_the_header(tmp_path):
@@ -111,7 +110,7 @@ def test_a_store_step_writes_flat_is_read_too(tmp_path):
                     encoding="utf-8")
     # a direct assignment, not a monkeypatch: the autouse fixture resets
     # STEP_SESSIONS for every test, so nothing leaks between them
-    sessions.STEP_SESSIONS = str(store)
+    step.STEP_SESSIONS = str(store)
 
     assert [r["id"] for r in sessions.step_light_records()] == [SID]
     assert sessions.step_light_records()[0]["path"] == str(path)
@@ -188,7 +187,7 @@ def test_subagent_sessions_are_left_out_unless_all(tmp_path):
 
 
 def test_an_absent_store_is_empty(monkeypatch, tmp_path):
-    monkeypatch.setattr(sessions, "STEP_SESSIONS", str(tmp_path / "no-step"))
+    monkeypatch.setattr(step, "STEP_SESSIONS", str(tmp_path / "no-step"))
     assert sessions.step_light_records() == []
     assert sessions.step_resolve("anything") == []
     assert sessions.step_session_cwd("anything") is None
@@ -358,13 +357,13 @@ def test_step_rows_appear_in_the_listing(monkeypatch, tmp_path, capsys):
     """The listing is the integration test: a step session has to show up
     with the other three tools' sessions, in recency order."""
     for attr in ("CLAUDE_PROJECTS", "CODEX_HOME", "KIMI_HOME"):
-        monkeypatch.setattr(sessions, attr, str(tmp_path / ("no-" + attr.lower())))
-    monkeypatch.setattr(sessions, "STEP_SESSIONS", str(tmp_path / "no-step-at-first"))
+        monkeypatch.setattr(common, attr, str(tmp_path / ("no-" + attr.lower())))
+    monkeypatch.setattr(step, "STEP_SESSIONS", str(tmp_path / "no-step-at-first"))
     proj = tmp_path / "projects" / "-home-hunt"
     proj.mkdir(parents=True)
     (proj / "c1.jsonl").write_text(json.dumps(
         {"type": "user", "cwd": "/home/hunt", "message": {"content": "the claude one"}}) + "\n")
-    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "projects"))
+    monkeypatch.setattr(common, "CLAUDE_PROJECTS", str(tmp_path / "projects"))
     step_store(tmp_path, "--C--Users-huntl--", [
         ("f_%s.jsonl" % SID, [header(), user("the step one")])])
 
@@ -548,7 +547,7 @@ def test_search_gathers_step_candidates(monkeypatch, tmp_path):
     is only wired into the listing is silently unsearchable."""
     from clisweave import search
     for attr in ("CLAUDE_PROJECTS", "CODEX_HOME", "KIMI_HOME"):
-        monkeypatch.setattr(sessions, attr, str(tmp_path / ("no-" + attr.lower())))
+        monkeypatch.setattr(common, attr, str(tmp_path / ("no-" + attr.lower())))
     step_store(tmp_path, "--C--Users-huntl--", [
         ("f_%s.jsonl" % SID, [header(), user("the step candidate")])])
 
@@ -559,7 +558,7 @@ def test_search_gathers_step_candidates(monkeypatch, tmp_path):
 def test_search_excludes_step_subagents_too(monkeypatch, tmp_path):
     from clisweave import search
     for attr in ("CLAUDE_PROJECTS", "CODEX_HOME", "KIMI_HOME"):
-        monkeypatch.setattr(sessions, attr, str(tmp_path / ("no-" + attr.lower())))
+        monkeypatch.setattr(common, attr, str(tmp_path / ("no-" + attr.lower())))
     step_store(tmp_path, "--C--Users-huntl--", [
         ("f_%s.jsonl" % SID, [header(), user("mine")]),
         ("2026-09-27T03-26-16-016Z_subagent-4a217d06-ad51-4f33-beb4-09ff1471661a.jsonl",
@@ -576,7 +575,7 @@ def test_stats_counts_step_sessions(monkeypatch, tmp_path, capsys):
     ])
     for attr, path in (("CLAUDE_PROJECTS", "no-claude"), ("CODEX_HOME", "no-codex"),
                        ("KIMI_HOME", "no-kimi")):
-        monkeypatch.setattr(sessions, attr, str(tmp_path / path))
+        monkeypatch.setattr(common, attr, str(tmp_path / path))
     sessions.cmd_stats([])
     out = capsys.readouterr().out
     assert "step" in out

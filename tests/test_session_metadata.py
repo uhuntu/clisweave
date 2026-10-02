@@ -18,21 +18,21 @@ import os
 
 import pytest
 
-from clisweave import sessions
+from clisweave import codex, common, sessions
 
 
 @pytest.fixture(autouse=True)
 def _reset_codex_path_cache():
-    sessions._codex_path_index = None
+    codex._codex_path_index = None
     yield
-    sessions._codex_path_index = None
+    codex._codex_path_index = None
 
 
 ROLLOUT = "019ffdbe-1234-7abc-8def-0000000000aa"
 
 
 def write_rollout(monkeypatch, tmp_path, sid, cwd, text, stamp, mtime=None, extra_lines=()):
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(common, "CODEX_HOME", str(tmp_path / ".codex"))
     year, month, day = stamp[:10].split("-")
     day_dir = tmp_path / ".codex" / "sessions" / year / month / day
     day_dir.mkdir(parents=True, exist_ok=True)
@@ -109,7 +109,7 @@ def test_claude_project_dir_decode_handles_a_windows_drive(monkeypatch, tmp_path
     proj_dir.mkdir(parents=True)
     (proj_dir / "abcd1234.jsonl").write_text(json.dumps(
         {"type": "user", "message": {"content": "fix the nfc lock"}}) + "\n")
-    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(projects))
+    monkeypatch.setattr(common, "CLAUDE_PROJECTS", str(projects))
 
     records = sessions.claude_light_records()
     assert [r["cwd"] for r in records] == ["C:/Users/hunt/work/proj"]
@@ -180,7 +180,7 @@ def test_codex_thread_names_keeps_the_latest_name_when_updated_at_is_unparseable
         json.dumps({"id": ROLLOUT, "thread_name": "Renamed to something real",
                     "updated_at": "not a timestamp"}),
     ]) + "\n")
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(common, "CODEX_HOME", str(codex_home))
 
     assert sessions.codex_thread_names()[ROLLOUT] == "Renamed to something real"
 
@@ -194,7 +194,7 @@ def test_codex_thread_names_still_prefers_the_newest_timestamp(monkeypatch, tmp_
         json.dumps({"id": ROLLOUT, "thread_name": "a stale earlier line",
                     "updated_at": "2026-08-14T00:00:00.000Z"}),
     ]) + "\n")
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(common, "CODEX_HOME", str(codex_home))
 
     assert sessions.codex_thread_names()[ROLLOUT] == "the real name"
 
@@ -225,7 +225,7 @@ def test_kimi_light_records_sort_epoch_second_sessions_correctly(monkeypatch, tm
     (sess_dir / "state.json").write_text(json.dumps({"updatedAt": 1755161559}))
     (kimi_home / "session_index.jsonl").write_text(json.dumps(
         {"sessionId": "session_x", "sessionDir": str(sess_dir)}) + "\n")
-    monkeypatch.setattr(sessions, "KIMI_HOME", str(kimi_home))
+    monkeypatch.setattr(common, "KIMI_HOME", str(kimi_home))
 
     records = sessions.kimi_light_records(show_all=False)
     assert records[0]["ts"] == 1755161559

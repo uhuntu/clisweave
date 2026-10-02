@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from clisweave import color, sessions
+from clisweave import codex, color, common, sessions
 
 
 # ---------- capturing what render_rows prints ----------
@@ -458,8 +458,8 @@ def test_a_codex_last_message_resolves_through_the_path_index(monkeypatch, tmp_p
     """The listing hands the renderer a light record, and a codex record's
     transcript is found the way the rest of the module finds it."""
     sid = "019ffdbe-1234-7abc-8def-0000000000aa"
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
-    sessions._codex_path_index = None
+    monkeypatch.setattr(common, "CODEX_HOME", str(tmp_path / ".codex"))
+    codex._codex_path_index = None
     try:
         path = write_codex(tmp_path, sid, [
             {"type": "session_meta", "payload": {"id": sid, "cwd": "/work"}},
@@ -470,7 +470,7 @@ def test_a_codex_last_message_resolves_through_the_path_index(monkeypatch, tmp_p
         ])
         assert sessions.session_last_message({"tool": "codex", "id": sid}) == "found through the index"
     finally:
-        sessions._codex_path_index = None
+        codex._codex_path_index = None
 
 
 def test_a_missing_transcript_has_no_last_message(tmp_path):

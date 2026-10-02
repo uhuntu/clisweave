@@ -15,16 +15,16 @@ import json
 
 import pytest
 
-from clisweave import sessions
+from clisweave import codex, common, sessions
 
 
 @pytest.fixture(autouse=True)
 def _reset_codex_path_cache():
     # codex_rollout_path() caches CODEX_HOME's rollout listing in a
     # module-level global; reset it so one test's tmp_path can't leak.
-    sessions._codex_path_index = None
+    codex._codex_path_index = None
     yield
-    sessions._codex_path_index = None
+    codex._codex_path_index = None
 
 
 def claude_session(tmp_path, lines, name="sess.jsonl", raw=None):
@@ -40,7 +40,7 @@ def write_codex_rollout(monkeypatch, tmp_path, sid, lines, raw=None):
     """Write a rollout in the shape codex itself does -- session_meta first,
     then response_items -- and point the module at that CODEX_HOME. Pass
     `raw` to write exact bytes instead (for the non-UTF-8 cases)."""
-    monkeypatch.setattr(sessions, "CODEX_HOME", str(tmp_path / ".codex"))
+    monkeypatch.setattr(common, "CODEX_HOME", str(tmp_path / ".codex"))
     day_dir = tmp_path / ".codex" / "sessions" / "2026" / "08" / "14"
     day_dir.mkdir(parents=True, exist_ok=True)
     path = day_dir / f"rollout-2026-08-14T00-00-00-{sid}.jsonl"
@@ -226,7 +226,7 @@ def test_render_rows_prints_a_row_whose_cwd_is_not_a_string(capsys):
 
 
 def test_listing_of_an_absent_claude_store_is_empty(monkeypatch, tmp_path):
-    monkeypatch.setattr(sessions, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
+    monkeypatch.setattr(common, "CLAUDE_PROJECTS", str(tmp_path / "no-claude"))
     assert sessions.claude_light_records() == []
 
 
