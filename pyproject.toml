@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clisweave"
-version = "0.1.2"
+version = "0.2.0"
 description = "Unified CLI wrapper + cross-tool session manager for Claude Code, Codex CLI, Kimi CLI, step, and CodeBuddy"
 readme = "README.md"
 license = { file = "LICENSE" }
