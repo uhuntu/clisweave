@@ -1,0 +1,14 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "mcp": {
+    "step-search": {
+      "type": "remote",
+      "url": "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:STEP_API_KEY}"
+      },
+      "oauth": false,
+      "enabled": true
+    }
+  }
+}

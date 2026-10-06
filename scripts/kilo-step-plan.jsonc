@@ -1,0 +1,41 @@
+// clisweave · Step Plan (Kilo Code) 接入配置模板
+// 用法：复制到项目根的 kilo.json（或 kilo.jsonc），已有同名文件则按需合并。
+// 文档：https://platform.stepfun.com/docs/zh/step-plan/integrations/kilo-code
+//
+// 注意：
+//   * API Key 不在文件里填写，请在 Kilo Code 设置 → Providers 中录入（扩展自行保管），
+//     也不要把密钥提交进仓库。
+//   * mcp 块依赖环境变量 STEP_API_KEY，需在启动编辑器前 export。
+{
+  "provider": {
+    "step-plan": {
+      // 自定义 Provider 连接信息（在 UI 里添加 Custom provider 时对应填写）
+      "id": "step-plan",
+      "displayName": "Step Plan",
+      "api": "openai-compatible",
+      "baseUrl": "https://api.stepfun.com/step_plan/v1",
+      // 模型容量：context/output 决定 Kilo Code 的上下文窗口与输出预算，
+      // 换成其它模型时按对应模型规格调整；不要把 -1 直接填给 output。
+      "models": {
+        "step-5-preview": {
+          "name": "Step 5 Preview",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "step-search": {
+      "type": "remote",
+      "url": "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:STEP_API_KEY}"
+      },
+      "oauth": false,
+      "enabled": true
+    }
+  }
+}
