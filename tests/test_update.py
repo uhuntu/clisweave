@@ -299,6 +299,34 @@ def test_update_tools_prints_proxy_hint_when_codex_fails(monkeypatch, capsys):
     assert update.UPDATE_PROXY_ENV in err
 
 
+def test_update_tools_detects_codex_curl_failure_hidden_by_zero_exit(monkeypatch, capsys):
+    """Codex 0.160.1 pipes curl into sh without pipefail, then prints a
+    success banner even when curl's TLS connection failed."""
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(argv, **kwargs):
+        result = FakeResult()
+        if argv[0] == "codex":
+            result.stdout = (
+                "curl: (35) TLS connect error: unexpected eof while reading\n"
+                "🎉 Update ran successfully! Please restart Codex.\n"
+            )
+        return result
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_tools() != 0
+    captured = capsys.readouterr()
+    assert "reported success after its installer failed" in captured.err
+    assert update.UPDATE_PROXY_ENV in captured.err
+    assert "curl: (35)" in captured.out
+
+
 def test_update_tools_reports_worst_exit_code_but_keeps_going(monkeypatch):
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 

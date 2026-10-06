@@ -58,6 +58,15 @@ TOOL_UPDATE_HINTS = {
     ),
 }
 
+# Codex 0.160.1's native ``codex update`` launches the install script as
+# ``curl ... | sh`` without pipefail.  If curl cannot establish TLS, the empty
+# shell exits successfully and Codex prints its success banner.  Until the
+# upstream updater propagates that failure, recognize curl's diagnostic in the
+# captured output so ``cw update`` can report/retry it correctly.
+TOOL_UPDATE_FAILURE_MARKERS = {
+    "codex": ("curl: (",),
+}
+
 
 def detect_repo_dir(package_dir):
     """If clisweave was installed by symlinking into a git clone (the curl or
@@ -75,7 +84,7 @@ def detect_repo_dir(package_dir):
     return None
 
 
-def run_update_command(argv, env=None):
+def run_update_command(argv, env=None, failure_markers=()):
     """Run one updater, returning its exit code.
 
     A Windows npm/global shim (claude.cmd, codex.cmd, kimi.cmd) passes
@@ -89,7 +98,22 @@ def run_update_command(argv, env=None):
         if found.endswith((".cmd", ".bat")):
             command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", *command]
     try:
-        return subprocess.run(command, env=env).returncode
+        if not failure_markers:
+            return subprocess.run(command, env=env).returncode
+
+        result = subprocess.run(
+            command, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, errors="replace",
+        )
+        output = getattr(result, "stdout", "") or ""
+        print(output, end="" if output.endswith("\n") or not output else "\n", flush=True)
+        if result.returncode == 0 and any(marker in output for marker in failure_markers):
+            print(
+                f"cw update: {argv[0]} reported success after its installer failed",
+                file=sys.stderr,
+            )
+            return 1
+        return result.returncode
     except OSError as exc:
         print(f"cw update: could not run {argv[0]}: {exc}", file=sys.stderr)
         return 127
@@ -142,7 +166,10 @@ def update_tools():
                 env.pop("NO_PROXY", None)
                 label = f"(retry {attempt}/{retries} via {proxy})"
             print(f"Updating {tool} {label}".rstrip() + " ...", flush=True)
-            last_code = run_update_command(argv, env=env)
+            last_code = run_update_command(
+                argv, env=env,
+                failure_markers=TOOL_UPDATE_FAILURE_MARKERS.get(tool, ()),
+            )
             if last_code == 0:
                 break
 
