@@ -329,6 +329,10 @@ def test_update_tools_detects_codex_curl_failure_hidden_by_zero_exit(monkeypatch
 
 def test_update_tools_reports_worst_exit_code_but_keeps_going(monkeypatch):
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    # An ambient proxy must not change the call count: the proxy retry is a
+    # fallback that only exists when UPDATE_PROXY_ENV is configured, and the
+    # first attempt is always direct.
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
 
     class FakeResult:
         def __init__(self, code):
