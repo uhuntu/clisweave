@@ -568,6 +568,19 @@ def test_resume_cwd_overrides_a_missing_directory(tmp_path, real_dir, fake_tools
     assert fake_tools["call"][0][1] == real_dir
 
 
+def test_a_bare_row_number_is_shorthand_for_resume(tmp_path, real_dir, fake_tools):
+    """`cw <N>` already means `cw resume <N>`; `cb` must match it."""
+    listing_with_cli(tmp_path, real_dir)
+    assert cb.main(["1"]) == 0
+    assert fake_tools["call"] == [(["/bin/codebuddy.cmd", "-r", CLI_SID], real_dir)]
+
+
+def test_the_shorthand_still_takes_resume_flags(tmp_path, real_dir, fake_tools):
+    listing_with_cli(tmp_path, real_dir)
+    assert cb.main(["1", "--dry-run"]) == 0
+    assert fake_tools == {"call": [], "popen": []}
+
+
 def test_resume_never_pretends_a_transcriptless_row_can_be_resumed_in_the_cli(tmp_path, real_dir, fake_tools, capsys):
     vscode_store(tmp_path, real_dir, CID)
     cb.main([])

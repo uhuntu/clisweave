@@ -75,6 +75,7 @@ USAGE = """Usage: cb [sessions] [--client C] [--cwd PREFIX] [--limit N|all] [--s
                   [--cluster [--window MIN] [--all-clusters]] [--full-id] [--json]
        cb full [...]                    same as `cb sessions --limit all`
        cb resume <N|[client:]id> [--cwd DIR] [--to C] [--history] [--dry-run]
+       cb <N> [...]                     shorthand for `cb resume <N>`
 
 Lists CodeBuddy sessions from the CLI, the VS Code extension and the desktop
 app as one table. `cb resume N` takes a row number from the last listing.
@@ -823,6 +824,9 @@ def main(argv=None):
     sub = "sessions"
     if args and not args[0].startswith("-"):
         sub, args = args[0], args[1:]
+    if sub.isdigit():
+        # `cb <N>` is shorthand for `cb resume <N>`, matching `cw <N>`.
+        return cmd_resume([sub] + args)
     if sub == "sessions":
         return cmd_sessions(args)
     if sub == "full":

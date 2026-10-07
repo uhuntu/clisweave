@@ -180,6 +180,7 @@ cb --cluster           # rows that are probably one conversation split across cl
 cb resume 3            # row 3 of the last `cb` listing
 cb resume cli:01a0f6ee # by client and id prefix
 cb resume 3 --dry-run  # show what would run, touch nothing
+cb 3                   # shorthand for `cb resume 3`
 ```
 
 | Client | Store | Title | `cb resume` |
