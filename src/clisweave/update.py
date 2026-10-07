@@ -35,6 +35,28 @@ UPDATE_PROXY_ENV = "CLISWEAVE_UPDATE_PROXY"
 # 5 attempts exceeded 10s on 2026-09-24), and a bare retry usually gets through.
 TOOL_UPDATE_RETRIES = {"claude": 2, "kimi": 2}
 
+# The self-update is a `git pull` (or a pip upgrade) on the same network that
+# severs long TLS transfers, and it used to get exactly one attempt: a pull
+# that died on SSL_ERROR_SYSCALL was reported as a failure even though the
+# very next try succeeds (seen live 2026-10-07). It now gets the same retry
+# treatment as the flaky tool updaters.
+SELF_UPDATE_RETRIES = 2
+
+# Failures a retry cannot fix. A dirty worktree, a diverged branch or a
+# rejected credential fail identically on every attempt, so retrying only
+# repeats the same error -- and would earn a network hint for a problem that
+# has nothing to do with the network.
+GIT_FATAL_MARKERS = (
+    "cannot pull with rebase",
+    "cannot rebase:",
+    "local changes would be overwritten",
+    "not possible to fast-forward",
+    "unrelated histories",
+    "Permission denied",
+    "Authentication failed",
+    "could not read Username",
+)
+
 # claude's updater fetches from a single Google-Cloud-fronted host with no
 # fallback mirror (unlike codex, which falls back to GitHub Releases when
 # its primary source stalls), so it fails more often -- especially on
@@ -84,8 +106,12 @@ def detect_repo_dir(package_dir):
     return None
 
 
-def run_update_command(argv, env=None, failure_markers=()):
-    """Run one updater, returning its exit code.
+def run_update_command(argv, env=None, failure_markers=(), capture=False):
+    """Run one updater, returning (exit code, captured output).
+
+    Output is only captured when a caller needs to read it (failure markers,
+    or `capture`): piped output can't be interactive, and these updaters own
+    the terminal otherwise.
 
     A Windows npm/global shim (claude.cmd, codex.cmd, kimi.cmd) passes
     `shutil.which` but cannot be spawned directly -- PATH search only appends
@@ -98,8 +124,8 @@ def run_update_command(argv, env=None, failure_markers=()):
         if found.endswith((".cmd", ".bat")):
             command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", *command]
     try:
-        if not failure_markers:
-            return subprocess.run(command, env=env).returncode
+        if not failure_markers and not capture:
+            return subprocess.run(command, env=env).returncode, ""
 
         result = subprocess.run(
             command, env=env, stdout=subprocess.PIPE,
@@ -112,26 +138,80 @@ def run_update_command(argv, env=None, failure_markers=()):
                 f"cw update: {argv[0]} reported success after its installer failed",
                 file=sys.stderr,
             )
-            return 1
-        return result.returncode
+            return 1, output
+        return result.returncode, output
     except OSError as exc:
         print(f"cw update: could not run {argv[0]}: {exc}", file=sys.stderr)
-        return 127
+        return 127, ""
     except ValueError as exc:
         print(f"cw update: invalid command for {argv[0]}: {exc}", file=sys.stderr)
-        return 127
+        return 127, ""
+
+
+def run_with_retries(argv, retries, proxy, failure_markers=(), give_up_markers=()):
+    """Run one updater, retrying up to `retries` times. Returns
+    (exit code, gave_up) -- `gave_up` marks a failure that a retry cannot fix,
+    so callers don't dress it up as something a proxy would help with.
+
+    The first attempt is always direct, so a proxy is only ever a fallback --
+    the loop below forces it for retries by stripping no_proxy exemptions, the
+    same way the tool updaters have always done."""
+    last_code = 0
+    for attempt in range(1 + retries):
+        env = None
+        if attempt:
+            label = f"retry {attempt}/{retries}"
+            if proxy:
+                # Force the proxy even where no_proxy would exempt things;
+                # a failure already proved the direct path is broken.
+                env = dict(os.environ)
+                env["http_proxy"] = env["https_proxy"] = proxy
+                env.pop("no_proxy", None)
+                env.pop("NO_PROXY", None)
+                label += f" via {proxy}"
+            print(f"  {label} ...", flush=True)
+        last_code, output = run_update_command(
+            argv, env=env, failure_markers=failure_markers,
+            capture=bool(give_up_markers),
+        )
+        if last_code == 0:
+            break
+        if any(marker in output for marker in give_up_markers):
+            return last_code, True
+    return last_code, False
 
 
 def update_self():
     """Update the clisweave install itself. Returns a process-style exit code."""
     package_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = detect_repo_dir(package_dir)
+    proxy = os.environ.get(UPDATE_PROXY_ENV)
 
     if repo_dir:
         print(f"Updating git install at {repo_dir} ...", flush=True)
-        return run_update_command(["git", "-C", repo_dir, "pull", "--ff-only"])
-    print("Updating pip install of clisweave ...", flush=True)
-    return run_update_command([sys.executable, "-m", "pip", "install", "--upgrade", "clisweave"])
+        argv = ["git", "-C", repo_dir, "pull", "--ff-only"]
+        give_up_markers = GIT_FATAL_MARKERS
+    else:
+        print("Updating pip install of clisweave ...", flush=True)
+        argv = [sys.executable, "-m", "pip", "install", "--upgrade", "clisweave"]
+        give_up_markers = ()
+
+    code, gave_up = run_with_retries(argv, SELF_UPDATE_RETRIES, proxy,
+                                     give_up_markers=give_up_markers)
+    if code != 0 and gave_up:
+        print(
+            "cw update: this failure isn't transient, so it was not retried "
+            "-- the message above is the real error",
+            file=sys.stderr,
+        )
+    elif code != 0 and not proxy:
+        print(
+            f"  hint: the update itself could not reach its source. If you have a "
+            f"working proxy, set {UPDATE_PROXY_ENV}=<proxy-url> and rerun -- failed "
+            f"updates retry through it automatically.",
+            file=sys.stderr,
+        )
+    return code
 
 
 def update_tools():
@@ -148,30 +228,14 @@ def update_tools():
             continue
 
         retries = TOOL_UPDATE_RETRIES.get(tool, 0)
-        if retries == 0 and os.environ.get(UPDATE_PROXY_ENV):
+        proxy = os.environ.get(UPDATE_PROXY_ENV)
+        if retries == 0 and proxy:
             # No per-tool retry policy, but the proxy fallback still earns one
             # attempt -- without this, codex (0 retries) could never reach it.
             retries = 1
-        proxy = os.environ.get(UPDATE_PROXY_ENV)
-        last_code = 0
-        for attempt in range(1 + retries):
-            env = None
-            label = f"(retry {attempt}/{retries})" if attempt else ""
-            if attempt and proxy:
-                # Force the proxy even where no_proxy would exempt things;
-                # a failure already proved the direct path is broken.
-                env = dict(os.environ)
-                env["http_proxy"] = env["https_proxy"] = proxy
-                env.pop("no_proxy", None)
-                env.pop("NO_PROXY", None)
-                label = f"(retry {attempt}/{retries} via {proxy})"
-            print(f"Updating {tool} {label}".rstrip() + " ...", flush=True)
-            last_code = run_update_command(
-                argv, env=env,
-                failure_markers=TOOL_UPDATE_FAILURE_MARKERS.get(tool, ()),
-            )
-            if last_code == 0:
-                break
+        print(f"Updating {tool} ...", flush=True)
+        last_code, _ = run_with_retries(argv, retries, proxy,
+                                        TOOL_UPDATE_FAILURE_MARKERS.get(tool, ()))
 
         if last_code != 0:
             worst = last_code

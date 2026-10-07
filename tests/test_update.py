@@ -85,6 +85,114 @@ def test_cmd_update_rejects_extra_arguments(capsys):
     assert "unexpected argument" in capsys.readouterr().err
 
 
+def test_update_self_retries_a_failed_git_pull(monkeypatch):
+    """The pull is small, but this network drops TLS connections at random:
+    one that died on SSL_ERROR_SYSCALL succeeded on the very next try
+    (live 2026-10-07). The self-update used to get a single attempt."""
+    monkeypatch.setattr(update, "detect_repo_dir", lambda _pkg: "/some/repo")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        def __init__(self, code):
+            self.returncode = code
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return FakeResult(1 if len(calls) == 1 else 0)  # fails once, then succeeds
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_self() == 0
+    assert len(calls) == 2
+
+
+def test_update_self_retry_goes_via_proxy(monkeypatch):
+    monkeypatch.setattr(update, "detect_repo_dir", lambda _pkg: "/some/repo")
+    monkeypatch.setenv(update.UPDATE_PROXY_ENV, "http://127.0.0.1:7897")
+    monkeypatch.setenv("no_proxy", "example.invalid")
+
+    class FakeResult:
+        def __init__(self, code):
+            self.returncode = code
+
+    envs = []
+
+    def fake_run(argv, **kwargs):
+        envs.append(kwargs.get("env"))
+        return FakeResult(1 if len(envs) == 1 else 0)
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_self() == 0
+    assert envs[0] is None  # first attempt stays direct
+    assert envs[1]["http_proxy"] == "http://127.0.0.1:7897"
+    assert envs[1]["https_proxy"] == "http://127.0.0.1:7897"
+    assert "no_proxy" not in envs[1]
+
+
+def test_update_self_gives_up_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(update, "detect_repo_dir", lambda _pkg: "/some/repo")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 1
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return FakeResult()
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_self() != 0
+    assert len(calls) == 1 + update.SELF_UPDATE_RETRIES
+
+
+def test_update_self_does_not_retry_a_failure_a_retry_cannot_fix(monkeypatch, capsys):
+    """A dirty worktree fails identically on every attempt: retrying only
+    repeats the error, and a network/proxy hint would point at the wrong
+    problem entirely."""
+    monkeypatch.setattr(update, "detect_repo_dir", lambda _pkg: "/some/repo")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 1
+        stdout = ("error: cannot pull with rebase: You have unstaged changes.\n"
+                  "error: Please commit or stash them.\n")
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return FakeResult()
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_self() != 0
+    assert len(calls) == 1  # no retries
+    err = capsys.readouterr().err
+    assert "not retried" in err
+    assert update.UPDATE_PROXY_ENV not in err  # not a network problem
+
+
+def test_update_self_hints_at_the_proxy_when_it_keeps_failing(monkeypatch, capsys):
+    monkeypatch.setattr(update, "detect_repo_dir", lambda _pkg: "/some/repo")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 1
+
+    monkeypatch.setattr(update.subprocess, "run", lambda *a, **kw: FakeResult())
+
+    assert update.update_self() != 0
+    err = capsys.readouterr().err
+    assert "hint:" in err
+    assert update.UPDATE_PROXY_ENV in err
+
+
 # ---------- update_tools ----------
 
 def test_update_tools_skips_missing_binaries(monkeypatch, capsys):

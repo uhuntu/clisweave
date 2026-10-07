@@ -39,7 +39,8 @@ def test_run_update_command_reports_an_unspawnable_tool_cleanly(monkeypatch, cap
 
     monkeypatch.setattr(update.subprocess, "run", cannot_spawn)
 
-    assert update.run_update_command(["kimi", "update", "--yes"]) == 127
+    code, _output = update.run_update_command(["kimi", "update", "--yes"])
+    assert code == 127
     assert "could not run kimi" in capsys.readouterr().err
 
 
