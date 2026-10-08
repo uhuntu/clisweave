@@ -435,6 +435,50 @@ def test_update_tools_detects_codex_curl_failure_hidden_by_zero_exit(monkeypatch
     assert "curl: (35)" in captured.out
 
 
+def test_update_tools_ignores_codex_curl_failure_when_the_install_recovered(
+    monkeypatch, capsys
+):
+    """A curl diagnostic against the primary host is not a failed update when
+    install.sh falls back to GitHub Releases and installs anyway.  Seen live
+    2026-10-08: `curl: (28) SSL connection timeout`, then the fallback warning,
+    then a real install of 0.161.0, exit 0 -- `cw update` must not fail codex
+    for that, nor print the proxy hint for a network the fallback routed around.
+
+    Note what is absent from this fixture: install.sh never ran, so there is no
+    "==> Updating Codex CLI from" line -- which is what separates this from the
+    recovered case, since codex's own success banner appears in both."""
+    monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.delenv(update.UPDATE_PROXY_ENV, raising=False)
+
+    class FakeResult:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(argv, **kwargs):
+        result = FakeResult()
+        if argv[0] == "codex":
+            result.stdout = (
+                "curl: (28) SSL connection timeout\n"
+                "WARNING: releases.openai.com is unavailable; falling back to "
+                "GitHub Releases.\n"
+                "==> Updating Codex CLI from 0.160.1 to 0.161.0\n"
+                "==> Detected platform: Linux (x64)\n"
+                "==> Codex CLI 0.161.0 installed successfully.\n"
+                "\n"
+                "🎉 Update ran successfully! Please restart Codex.\n"
+            )
+        return result
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+
+    assert update.update_tools() == 0
+    captured = capsys.readouterr()
+    assert "reported success after its installer failed" not in captured.err
+    assert "hint:" not in captured.err
+    # the updater's own output is still shown, curl diagnostic included
+    assert "curl: (28)" in captured.out
+
+
 def test_update_tools_reports_worst_exit_code_but_keeps_going(monkeypatch):
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     # An ambient proxy must not change the call count: the proxy retry is a

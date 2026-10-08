@@ -89,6 +89,29 @@ TOOL_UPDATE_FAILURE_MARKERS = {
     "codex": ("curl: (",),
 }
 
+# The install script's own way of saying it recovered: when the primary host
+# stalls it falls back to GitHub Releases and installs anyway (seen live
+# 2026-10-08: `curl: (28) SSL connection timeout` against
+# releases.openai.com, then "WARNING: ... falling back to GitHub Releases",
+# then "Codex CLI 0.161.0 installed successfully", exit 0).  A curl diagnostic
+# that led to a completed install is a broken primary source, not a broken
+# update -- reporting the latter would fail `cw update` for a tool that did
+# upgrade, and would earn a proxy hint for a network the fallback already
+# routed around.
+#
+# Only install.sh's own progress lines count here.  Codex's own
+# "🎉 Update ran successfully! Please restart Codex." banner deliberately does
+# NOT: codex prints it either way, which is exactly the failure this whole
+# marker mechanism exists to catch -- curl died, the piped shell got empty
+# input, exited 0, and codex still printed its banner.  Treating that banner
+# as proof of recovery would defeat the check.
+TOOL_UPDATE_RECOVERY_MARKERS = {
+    "codex": (
+        "==> Updating Codex CLI from",
+        "installed successfully",
+    ),
+}
+
 
 def detect_repo_dir(package_dir):
     """If clisweave was installed by symlinking into a git clone (the curl or
@@ -106,7 +129,8 @@ def detect_repo_dir(package_dir):
     return None
 
 
-def run_update_command(argv, env=None, failure_markers=(), capture=False):
+def run_update_command(argv, env=None, failure_markers=(), recovery_markers=(),
+                       capture=False):
     """Run one updater, returning (exit code, captured output).
 
     Output is only captured when a caller needs to read it (failure markers,
@@ -133,7 +157,11 @@ def run_update_command(argv, env=None, failure_markers=(), capture=False):
         )
         output = getattr(result, "stdout", "") or ""
         print(output, end="" if output.endswith("\n") or not output else "\n", flush=True)
-        if result.returncode == 0 and any(marker in output for marker in failure_markers):
+        if (
+            result.returncode == 0
+            and any(marker in output for marker in failure_markers)
+            and not any(rec in output for rec in recovery_markers)
+        ):
             print(
                 f"cw update: {argv[0]} reported success after its installer failed",
                 file=sys.stderr,
@@ -148,7 +176,8 @@ def run_update_command(argv, env=None, failure_markers=(), capture=False):
         return 127, ""
 
 
-def run_with_retries(argv, retries, proxy, failure_markers=(), give_up_markers=()):
+def run_with_retries(argv, retries, proxy, failure_markers=(), give_up_markers=(),
+                     recovery_markers=()):
     """Run one updater, retrying up to `retries` times. Returns
     (exit code, gave_up) -- `gave_up` marks a failure that a retry cannot fix,
     so callers don't dress it up as something a proxy would help with.
@@ -172,6 +201,7 @@ def run_with_retries(argv, retries, proxy, failure_markers=(), give_up_markers=(
             print(f"  {label} ...", flush=True)
         last_code, output = run_update_command(
             argv, env=env, failure_markers=failure_markers,
+            recovery_markers=recovery_markers,
             capture=bool(give_up_markers),
         )
         if last_code == 0:
@@ -234,8 +264,11 @@ def update_tools():
             # attempt -- without this, codex (0 retries) could never reach it.
             retries = 1
         print(f"Updating {tool} ...", flush=True)
-        last_code, _ = run_with_retries(argv, retries, proxy,
-                                        TOOL_UPDATE_FAILURE_MARKERS.get(tool, ()))
+        last_code, _ = run_with_retries(
+            argv, retries, proxy,
+            failure_markers=TOOL_UPDATE_FAILURE_MARKERS.get(tool, ()),
+            recovery_markers=TOOL_UPDATE_RECOVERY_MARKERS.get(tool, ()),
+        )
 
         if last_code != 0:
             worst = last_code
