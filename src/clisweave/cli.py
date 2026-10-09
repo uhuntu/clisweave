@@ -1,12 +1,14 @@
-"""cw - unified wrapper for the claude / codex / kimi / step CLIs.
-Normalizes a handful of common flags across the four tools and passes
-everything else straight through.
+"""cw - unified wrapper for the claude / codex / kimi / step CLIs, plus the
+zcode desktop app's session store. Normalizes a handful of common flags
+across the terminal tools and passes everything else straight through;
+zcode has no terminal interface, so `cw zcode` only opens the app.
 """
+import os
 import sys
 
 from . import __version__, search, sessions, update
 
-TOOLS = ("claude", "codex", "kimi", "step")
+TOOLS = ("claude", "codex", "kimi", "step", "zcode")
 
 # USAGE is an f-string built from TOOLS, search.JUDGE_CMD and
 # search.DEFAULT_JUDGE for the same reason SUBCOMMANDS exists below: the
@@ -45,12 +47,15 @@ Per-tool --yolo mapping:
   codex   -> --approve-for-me   (auto-approve, still sandboxed)
   kimi    -> -y/--yolo
   step    -> --approval-mode auto + --non-interactive-approval allow
+  zcode   -> (desktop app; no flags apply)
 
 Examples:
   cw claude -p "summarize this repo"
   cw codex -p -m o3 "fix the failing test"
   cw kimi -c
   cw step -p "summarize this repo"
+  cw zcode            # open the ZCode app on this directory (its sessions
+                      #   show in `cw sessions` too)
   cw claude -- --agent reviewer "look at this diff"
   cw sessions --limit 10
   cw sessions --limit all   # same as `cw full`
@@ -60,7 +65,8 @@ Examples:
   cw resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
   cw 3 codex          # continue row 3 in a new Codex session with context
   cw update           # update clisweave itself
-  cw update tools     # update claude, codex, kimi, and step (whichever are installed)
+  cw update tools     # update claude, codex, kimi, and step (whichever are
+                      #   installed; zcode updates itself)
   cw update all       # both of the above
   cw search "the nfc frequency lock issue"   # asks {search.DEFAULT_JUDGE} (the default judge)
   cw search "katago" --judge codex   # judge with a different tool
@@ -170,6 +176,14 @@ def build_command(tool, rest):
             # back to --non-interactive-approval, which denies by default, so
             # -y has to cover both.
             cmd += ["--approval-mode", "auto", "--non-interactive-approval", "allow"]
+    elif tool == "zcode":
+        # A desktop app, not a terminal CLI: there are no flags to translate
+        # and no stdin/stdout session to attach to. The one thing `cw zcode`
+        # can do is open the app on the directory you are standing in, via
+        # the workspace deep link -- the only route it registers.
+        if print_ or continue_session or model or add_dirs or yolo or trailing:
+            raise UsageError("zcode is a desktop app -- no wrapper flags apply; run `zcode` directly")
+        cmd = ["zcode", sessions.zcode_workspace_link(os.getcwd())]
     else:  # kimi
         cmd = ["kimi"]
         if print_:

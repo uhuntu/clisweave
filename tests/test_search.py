@@ -155,8 +155,10 @@ def test_gather_candidates_respects_tool_filter(monkeypatch):
     monkeypatch.setattr(sessions, "kimi_light_records", lambda show_all: [{"tool": "kimi", "ts": 3}])
     monkeypatch.setattr(sessions, "step_light_records",
                         lambda show_all=False: [{"tool": "step", "ts": 4}])
+    monkeypatch.setattr(sessions, "zcode_light_records",
+                        lambda show_all=False: [{"tool": "zcode", "ts": 5}])
 
-    assert [r["tool"] for r in search.gather_candidates(None)] == ["step", "kimi", "codex", "claude"]
+    assert [r["tool"] for r in search.gather_candidates(None)] == ["zcode", "step", "kimi", "codex", "claude"]
     assert [r["tool"] for r in search.gather_candidates("codex")] == ["codex"]
 
 

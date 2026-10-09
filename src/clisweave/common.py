@@ -1,11 +1,13 @@
 """Shared readers, path helpers and message-text classification.
 
-These are the primitives every tool module (claude, codex, kimi, step) is
-built on: the tolerant file readers (open_text, read_json, read_jsonl), the
-JSON field guards (dict_field, list_field, block_text), and the filters that
-separate a genuine user request from injected boilerplate, a pasted terminal
-transcript or a bare acknowledgement. Each tool's store location lives here
-too, so a reader reaches its store through this module.
+These are the primitives every tool module (claude, codex, kimi, step,
+zcode) is built on: the tolerant file readers (open_text, read_json,
+read_jsonl), the JSON field guards (dict_field, list_field, block_text), and
+the filters that separate a genuine user request from injected boilerplate, a
+pasted terminal transcript or a bare acknowledgement. Each tool's store
+location lives here too, so a reader reaches its store through this module --
+except where a tool keeps its own (step's session directory, zcode's
+database), which its own module constant carries.
 
 Tool modules reach these names as `common.<name>` at call time rather than
 importing them into their own namespace -- every reader goes through one
@@ -26,7 +28,7 @@ CODEX_HOME = os.path.join(HOME, ".codex")
 KIMI_HOME = os.path.join(HOME, ".kimi-code")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
-TOOLS = ("claude", "codex", "kimi", "step")
+TOOLS = ("claude", "codex", "kimi", "step", "zcode")
 
 
 

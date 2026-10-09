@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from clisweave import codex, common, sessions, step
+from clisweave import codex, common, sessions, step, zcode
 
 SID = "01a0e0e1-2965-79d4-aba9-3dd3bfc0f7cd"
 
@@ -21,6 +21,9 @@ SID = "01a0e0e1-2965-79d4-aba9-3dd3bfc0f7cd"
 @pytest.fixture(autouse=True)
 def _isolate_step_store(monkeypatch, tmp_path):
     monkeypatch.setattr(step, "STEP_SESSIONS", str(tmp_path / "no-step"))
+    # the machine's own zcode database would leak real sessions into any
+    # listing/search test that gathers all five tools
+    monkeypatch.setattr(zcode, "ZCODE_DB", str(tmp_path / "no-zcode.sqlite"))
     yield
 
 

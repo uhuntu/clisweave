@@ -2,11 +2,11 @@
 
 [![test](https://github.com/uhuntu/clisweave/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/clisweave/actions/workflows/test.yml)
 
-A tiny, dependency-free wrapper that weaves four AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Kimi CLI](https://www.kimi-cli.com/), and [step](https://github.com/stepfun-ai/Step-Code) — behind one set of flags, plus cross-tool session discovery, resume, and handoff.
+A tiny, dependency-free wrapper that weaves four AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Kimi CLI](https://www.kimi-cli.com/), and [step](https://github.com/stepfun-ai/Step-Code) — behind one set of flags, plus cross-tool session discovery, resume, and handoff — and reads the ZCode desktop app's session store alongside them, so its sessions show up in the same listing, search, and handoff flow.
 
 No daemon, no config file, no build step — just a small Python package (`src/clisweave/`) that reads each tool's own on-disk session store directly.
 
-![clisweave demo: a unified session list across claude/codex/kimi/step, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
+![clisweave demo: a unified session list across claude/codex/kimi/step/zcode, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
 
 ## Install
 
@@ -37,7 +37,7 @@ cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
 
 Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `cw`, `cb`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases (an existing `ai` link is left working, but a fresh install no longer creates one) in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
-Requires `claude`, `codex`, `kimi` and/or `step` already installed and on `PATH` (only the ones you actually use need to be present).
+Requires `claude`, `codex`, `kimi` and/or `step` already installed and on `PATH` (only the ones you actually use need to be present). ZCode needs nothing on `PATH` for its sessions to be *listed* — its SQLite store under `~/.zcode/cli/db` is read directly — but `cw zcode` and `cw resume zcode <id>` launch the app itself, which must be installed.
 
 > **Windows note:** running the curl one-liner from PowerShell/cmd (rather than Git Bash) can invoke the WSL `bash` launcher by mistake instead of Git's — use `irm` above, or run curl from Git Bash directly. `install.sh` also copes if Git Bash lacks symlink privilege (falls back to a generated launcher instead of a broken copy) or `python3` on `PATH` is the Microsoft Store's no-op stub (probes `python`/`py -3` instead). Files installed by `install.sh` are still extensionless with a shebang line, though, which PowerShell can't execute directly — `install.ps1`'s `.cmd` launchers don't have that problem. If you stick with `install.sh`, call `cw` from Git Bash instead, or add a function to your PowerShell `$PROFILE`:
 > ```powershell
@@ -55,7 +55,7 @@ cw update all    # both
 
 `cw update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
 
-`cw update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure.
+`cw update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure. ZCode is not attempted — it is a desktop app that updates itself.
 
 Two fallbacks exist for flaky networks, both confirmed live on 2026-09-24:
 
@@ -71,11 +71,12 @@ Equivalent manual commands for updating clisweave itself, if you'd rather:
 ## Usage
 
 ```bash
-cw                          # recent sessions across all four tools (same as `cw sessions`)
+cw                          # recent sessions across all five tools (same as `cw sessions`)
 cw claude -p "prompt"       # -> claude -p "prompt"
 cw codex -p -m o3 "prompt"  # -> codex exec -m o3 "prompt"
 cw kimi -c                  # -> kimi -c
 cw step -p "summarize"      # -> step -p "summarize"
+cw zcode                    # open the ZCode app on this directory
 
 cw sessions --limit 10      # list recent sessions, all tools
 cw sessions --limit all     # no cutoff -- same as `cw full`
@@ -100,7 +101,7 @@ cw stats                    # session counts per tool, oldest/newest, top direct
 cw stats --tool claude      # stats for one tool only
 ```
 
-Sessions a tool started for itself are left out of `cw sessions` and `cw search`: Codex's command-approval reviews (one per command it asks you to approve), step's own `subagent-…` sessions, and `cw search`'s own judge runs. None of them is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`cw resume codex <id>`), and `cw sessions --all` lists them anyway.
+Sessions a tool started for itself are left out of `cw sessions` and `cw search`: Codex's command-approval reviews (one per command it asks you to approve), step's own `subagent-…` sessions, ZCode's subagent runs (sessions with a `parent_id` in its store), and `cw search`'s own judge runs. None of them is a conversation of yours, and a judge session literally contains every candidate's text, which makes it match nearly any topic. They stay reachable by id (`cw resume codex <id>`), and `cw sessions --all` lists them anyway.
 
 Every `cw`/`cw sessions` listing is numbered and cached, so `cw resume <N>` is usually the fastest way in: run `cw`, glance at the row you want, `cw resume 3`. The cache is just the last listing you saw — it's overwritten by the next `cw sessions` call and doesn't try to detect if the underlying sessions changed since.
 
@@ -117,6 +118,8 @@ On a narrow terminal the directory column shrinks first and the turns column is 
 To switch agents, put the target tool after the row number: `cw 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
 
 One exception: kimi cannot open an interactive session with an initial prompt (a bare prompt parses as a subcommand name), so a handoff to it runs the seed as a one-shot `kimi -p` and then automatically resumes the session that run persisted (`kimi -S <id>`), dropping you into the interactive continuation with the summary already in its history. If the seed run fails, nothing is resumed — the error is reported, and you pick up with `kimi -c`.
+
+A zcode row can be a handoff *source* like any other — `cw 3 claude` exports its conversation and continues in Claude Code, which is the way out when a session has grown past what its model can serve. It can never be a *target*: ZCode is a desktop app with no CLI that starts a session, so there is nothing to seed, and the command says so instead of exporting into a void.
 
 ### How `cw search` works
 
@@ -140,13 +143,13 @@ It has to say *why* each match counts: the judge answers one line per match (`7:
 
 ### Normalized flags (`cw <tool> ...`)
 
-| Flag | Meaning | claude | codex | kimi | step |
-|---|---|---|---|---|---|
-| `-p`, `--print` | non-interactive, print and exit | `-p` | `exec` | `-p` | `-p` |
-| `-c`, `--continue` | continue most recent session in cwd | `--continue` | `exec resume --last` | `-c` | `-c` |
-| `-m`, `--model <model>` | model to use | `--model` | `-m` | `-m` | `--model` |
-| `--add-dir <dir>` | additional workspace directory (repeatable) | `--add-dir` | `--add-dir` | `--add-dir` | *(not supported — step has no per-workspace flag; `--add-dir` is rejected rather than silently dropped)* |
-| `-y`, `--yolo` | auto-approve tool calls | `--dangerously-skip-permissions` | `--approve-for-me` (stays sandboxed) | `-y` | `--approval-mode auto` + `--non-interactive-approval allow` |
+| Flag | Meaning | claude | codex | kimi | step | zcode |
+|---|---|---|---|---|---|---|
+| `-p`, `--print` | non-interactive, print and exit | `-p` | `exec` | `-p` | `-p` | *(not supported — desktop app; bare `cw zcode` opens it on the current directory, anything else is rejected rather than misinterpreted)* |
+| `-c`, `--continue` | continue most recent session in cwd | `--continue` | `exec resume --last` | `-c` | `-c` | *(not supported)* |
+| `-m`, `--model <model>` | model to use | `--model` | `-m` | `-m` | `--model` | *(not supported)* |
+| `--add-dir <dir>` | additional workspace directory (repeatable) | `--add-dir` | `--add-dir` | `--add-dir` | *(not supported — step has no per-workspace flag; `--add-dir` is rejected rather than silently dropped)* | *(not supported)* |
+| `-y`, `--yolo` | auto-approve tool calls | `--dangerously-skip-permissions` | `--approve-for-me` (stays sandboxed) | `-y` | `--approval-mode auto` + `--non-interactive-approval allow` | *(not supported)* |
 
 Anything after a literal `--`, or any flag this wrapper doesn't recognize, passes straight through to the underlying CLI unchanged.
 
@@ -158,14 +161,17 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 - **codex**: `~/.codex/sessions/**/*.jsonl`, plus `~/.codex/session_index.jsonl` for auto-generated titles
 - **kimi**: `~/.kimi-code/session_index.jsonl` + each session's `state.json` / `agents/main/wire.jsonl`
 - **step**: `~/.stepcode/agent/sessions/<encoded-cwd>/<timestamp>_<session-id>.jsonl`, one file per session — or `$STEP_CODING_AGENT_SESSION_DIR` if set. The id and cwd are the `session` record on the file's first line; the encoded directory is only the fallback when that record is missing. A session named with `step --name` or `/name` shows that name when its log holds no prompt to read. Sessions step started for itself (`subagent-…` ids) are left out unless `--all` asks for them.
+- **zcode**: `~/.zcode/cli/db/db.sqlite` — a SQLite store (`session`/`message`/`part` tables), read through a read-only connection (`mode=ro`, the contract every read of a live app's store gets), so the app can be running while you list. There is no per-session transcript file: the conversation is `part` rows, the cwd is `session.directory`, and the title is one ZCode's own auto-titler keeps current — used directly, with the first genuine prompt standing in only for a session it never titled. Subagent runs (`parent_id` set) are left out unless `--all` asks for them.
 
   That layout is the documented [session file format](https://pi.dev/docs/latest/session-format) shared by the pi-derived CLIs, so reading these files directly is the sanctioned route rather than a hack — the same reason claude's `projects/*.jsonl` and codex's `sessions/**` are read as they are.
 
 Titles are best-effort (scanned from the first user message / prompt in each session's log). Claude's cwd is read from the session content itself when available, falling back to a guess decoded from the project-directory name only if that's missing. Resuming a codex thread appends a *new* rollout file instead of extending the one it already had, so a single session id can own several; only the newest is read — for the row's timestamp, title, cwd, snippet, and any handoff. A codex fork or subagent thread has no prompt of its own, so it is named after the thread it forked from (`(fork) …`), the way a handoff is named after the session it continues. kimi names its own sessions too, and that name is used when its log holds no text prompt to read — but only when it is a real name, not the `[image]`/`New Session` placeholder it uses until it has one. A message relayed by a bridge (openclaw) behind its `Conversation info: ⟦openclaw:ctx⟧` header is read as what was said after the header, not as the header itself.
 
-`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `cw resume`/`cw <N>` know each session's original directory already (it's the CWD column), so for all four tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
+`kimi -S <id>` refuses to resume a session from a different directory than the one it was created in. `cw resume`/`cw <N>` know each session's original directory already (it's the CWD column), so for all the tools they `cd` there automatically before resuming, rather than leaving you to do it by hand (or, for kimi, surfacing its hard error).
 
-Pass `--cwd <dir>` to send it somewhere else instead, e.g. `cw resume 2 --cwd /path/to/other-project`. All four tie a session's transcript to whichever directory it first ran in — claude, codex and kimi quietly keep writing to the *original* directory's log (confirmed by testing `claude --resume` from an unrelated directory: nothing was written under the new one), and step refuses outright, stopping to ask `Fork this session into current directory? [y/N]` (under `-p` there is no TTY to answer it: exit 1, nothing written) — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `cw resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `cw <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
+Pass `--cwd <dir>` to send it somewhere else instead, e.g. `cw resume 2 --cwd /path/to/other-project`. All four terminal tools tie a session's transcript to whichever directory it first ran in — claude, codex and kimi quietly keep writing to the *original* directory's log (confirmed by testing `claude --resume` from an unrelated directory: nothing was written under the new one), and step refuses outright, stopping to ask `Fork this session into current directory? [y/N]` (under `-p` there is no TTY to answer it: exit 1, nothing written) — so a session can't actually be relocated in place. If `--cwd` points at a directory other than the one the session already lives in, `cw resume` recognizes that a plain `--resume` there wouldn't accomplish anything (it'd work, but the conversation would still be invisible to that directory's own `/resume` picker) and instead does a handoff: it exports the full transcript and starts a **new**, freshly-seeded session in `<dir>` — same as `cw <N> <other-tool>`, but staying on the same tool. That new session is a real one rooted in `<dir>`, so it shows up in `/resume` there going forward.
+
+ZCode has neither of those moves available: no CLI reopens one session, and no route seeds one, so `cw resume zcode <id>` does the closest thing that works — it opens the app on the session's workspace via its `zcode://workspace/open?path=…` deep link and tells you to pick the session in the app's own task list — and `--cwd` relocation is refused outright rather than half-done. (The app registers only that workspace route; there is no session-level deep link.)
 
 ## `cb`: CodeBuddy
 

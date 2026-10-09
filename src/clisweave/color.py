@@ -27,8 +27,10 @@ RESET = "0"
 
 # One hue per tool. 256-color values when the terminal has them, basic
 # colors otherwise -- close enough hues that the table still reads the same.
-TOOL_256 = {"claude": "214", "codex": "114", "kimi": "117", "step": "141"}
-TOOL_BASIC = {"claude": "33", "codex": "32", "kimi": "36", "step": "35"}
+TOOL_256 = {"claude": "214", "codex": "114", "kimi": "117", "step": "141",
+            "zcode": "110"}
+TOOL_BASIC = {"claude": "33", "codex": "32", "kimi": "36", "step": "35",
+              "zcode": "34"}
 
 _STATE = None  # None = not probed yet, True/False once decided
 

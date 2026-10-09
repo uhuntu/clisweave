@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from clisweave import codex, common, sessions, step
+from clisweave import codex, common, sessions, step, zcode
 
 
 @pytest.fixture(autouse=True)
@@ -13,10 +13,12 @@ def _reset_codex_path_cache(monkeypatch):
     # listing in a module-level global; reset it around every test so one
     # test's tmp_path can't leak into another's.
     codex._codex_path_index = None
-    # A listing test must see the three stores it builds by hand and nothing
-    # else: step's is on this machine with real sessions in it, so point it
-    # out of the way unless a test sets one up itself.
+    # A listing test must see the stores it builds by hand and nothing
+    # else: step's is on this machine with real sessions in it, and zcode's
+    # database likewise, so point both out of the way unless a test sets
+    # one up itself.
     monkeypatch.setattr(step, "STEP_SESSIONS", os.path.join(os.sep, "no", "step", "sessions"))
+    monkeypatch.setattr(zcode, "ZCODE_DB", os.path.join(os.sep, "no", "zcode", "db.sqlite"))
     yield
     codex._codex_path_index = None
 

@@ -1,7 +1,9 @@
-"""Session listing/resuming across the claude, codex, kimi, and step CLIs.
+"""Session listing/resuming across the claude, codex, kimi, step, and zcode
+stores.
 Invoked via `cw sessions` / `cw resume`, or standalone as `ai-sessions`.
 
-The per-tool store readers live in claude.py, codex.py, kimi.py and step.py,
+The per-tool store readers live in claude.py, codex.py, kimi.py, step.py and
+zcode.py,
 on top of the shared primitives in common.py. This module keeps the listing,
 the literal search scan, the handoff engine and the resume flow, and
 re-imports the per-tool names: cli.py, search.py and the tests reach them as
@@ -105,6 +107,17 @@ from .step import (
     step_snippet,
     step_title,
     step_title_with_name,
+)
+from .zcode import (
+    zcode_contains,
+    zcode_handoff_messages,
+    zcode_last_message,
+    zcode_light_records,
+    zcode_resolve,
+    zcode_session_cwd,
+    zcode_session_turns,
+    zcode_snippet,
+    zcode_workspace_link,
 )
 
 
@@ -366,6 +379,13 @@ def literal_matches(candidates, topic):
     needle = _bytes_needle(topic)
     hits = []
     for record in candidates:
+        if record["tool"] == "zcode":
+            # No transcript file to scan -- the conversation lives in the
+            # SQLite store, and zcode_contains walks the same categories of
+            # text (what was said, called, returned) the file scan does.
+            if zcode_contains(record["id"], pattern):
+                hits.append(record)
+            continue
         if any(_file_contains(path, pattern,
                               record["tool"] if path.endswith(".jsonl") else None,
                               needle=needle)
@@ -395,6 +415,12 @@ def session_handoff_details(tool, sid):
             return None
         cwd = record.get("cwd")
         messages = step_handoff_messages(record["path"])
+    elif tool == "zcode":
+        record = next((r for r in zcode_light_records(show_all=True) if r["id"] == sid), None)
+        if not record:
+            return None
+        cwd = record.get("cwd")
+        messages = zcode_handoff_messages(sid)
     else:
         record = next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
         if not record:
@@ -531,6 +557,13 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
     purpose. Either way a plain `--resume`/`-S` from elsewhere never becomes
     visible to that directory's own resume picker. A fresh, seeded session
     does."""
+    if target_tool == "zcode":
+        # zcode is a desktop app with no CLI that starts a session, so there
+        # is nothing to seed: the export would land in a cache file nothing
+        # ever reads. Handing the same context to a terminal tool works.
+        print("cw handoff: zcode has no CLI that starts a session -- hand the context to "
+              "claude, codex, kimi or step instead", file=sys.stderr)
+        sys.exit(1)
     details = session_handoff_details(source_tool, source_id)
     if not details:
         print(f"cw handoff: source session {source_id} is no longer available", file=sys.stderr)
@@ -650,6 +683,8 @@ def cmd_list(args):
         light += kimi_light_records(show_all)
     if tool_filter in (None, "step"):
         light += step_light_records(show_all)
+    if tool_filter in (None, "zcode"):
+        light += zcode_light_records(show_all)
 
     light.sort(key=lambda r: r["ts"], reverse=True)
 
@@ -706,6 +741,8 @@ def cmd_stats(args):
         light += kimi_light_records(True)
     if tool_filter in (None, "step"):
         light += step_light_records(True)
+    if tool_filter in (None, "zcode"):
+        light += zcode_light_records(True)
 
     total = len(light)
     if total == 0:
@@ -839,6 +876,13 @@ def _handoff_seed_texts(tool, d):
         if message.get("role") not in ("user", "assistant"):
             return []
         return _all_text_blocks(list_field(message, "content"))
+    if tool == "zcode":
+        # zcode is never a handoff target -- perform_handoff refuses it, no
+        # CLI there seeds a session -- so no zcode session can open with a
+        # handoff seed. Stated explicitly rather than left to fall through:
+        # everything below this branch is kimi's record shapes, which a
+        # zcode record would silently hit.
+        return []
     if d.get("type") == "turn.prompt":
         return _all_text_blocks(list_field(d, "input"))
     if d.get("type") == "context.append_loop_event":
@@ -890,7 +934,9 @@ def _transcript_path(r):
     # still resolves through the index.
     if r.get("path"):
         return r["path"]
-    if r["tool"] in ("claude", "step"):
+    if r["tool"] in ("claude", "step", "zcode"):
+        # zcode's transcript lives in the SQLite store, not in a file -- a
+        # path-less record is the normal case there, not a missing one.
         return None
     if r["tool"] == "codex":
         return codex_rollout_path(r["id"])
@@ -909,6 +955,8 @@ def _find_record(tool, sid):
         return next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
     if tool == "step":
         return next((r for r in step_light_records(show_all=True) if r["id"] == sid), None)
+    if tool == "zcode":
+        return next((r for r in zcode_light_records(show_all=True) if r["id"] == sid), None)
     return None
 
 
@@ -923,6 +971,11 @@ def _resolve_title_and_cwd(r, depth=0):
     elif tool == "codex":
         title = r.get("title") or codex_rollout_title(r["id"])
         cwd_show = codex_cwd(r["id"]) or "?"
+    elif tool == "zcode":
+        # The title is a stored one -- ZCode's auto-titler keeps it current,
+        # and the light record normalized it on the way in.
+        title = r.get("title") or "(no title)"
+        cwd_show = r.get("cwd") or "?"
     else:
         title = kimi_title(r["dir"])
         cwd_show = r.get("cwd") or "?"
@@ -1094,12 +1147,17 @@ def session_turns(record):
       codex   a response_item whose payload carries "role":"user"
       kimi    a "turn.prompt" record in the wire log
       step    a message record with "role":"user"
+      zcode   a user-role row of the SQLite message table
     Whole lines rather than occurrences, so a transcript pasted into a
     message is not counted twice; a message that merely quotes one of these
     strings is the price of not parsing, and it is a rare one. Zero matches
     reads as None rather than 0: a store that writes its JSON with spaces
     after the colons would otherwise show every session as turn-free."""
     tool = record.get("tool")
+    if tool == "zcode":
+        # Nothing to byte-count -- the store answers directly, and honestly:
+        # an uncountable session shows the same "?" a file-backed one does.
+        return zcode_session_turns(record.get("id"))
     if tool == "kimi":
         path = os.path.join(record.get("dir") or "", "agents", "main", "wire.jsonl")
         marker, exclude = b'"turn.prompt"', None
@@ -1197,6 +1255,10 @@ def session_last_message(record):
     reminder, a pasted transcript, a captionless screenshot. A trailing
     system reminder is common enough (a scheduled task firing at the end of
     a session) that walking past it is the normal case, not an edge one."""
+    if record.get("tool") == "zcode":
+        # The transcript lives in the store, not in a file -- the store
+        # answers this one directly.
+        return zcode_last_message(record.get("id"))
     path = _transcript_path(record)
     if not path:
         return None
@@ -1423,6 +1485,11 @@ def cmd_resume(args):
             exec_or_die(["codex", "resume"])
         elif tool == "kimi":
             exec_or_die(["kimi", "-S"])
+        elif tool == "zcode":
+            # The app is its own session picker; no CLI selector exists.
+            print("cw resume: zcode is a desktop app -- pick the session in its task list, "
+                  "or run `cw sessions --tool zcode` for ids", file=sys.stderr)
+            return
         else:
             # no id -> step opens its own session selector
             exec_or_die(["step", "--resume"])
@@ -1430,7 +1497,7 @@ def cmd_resume(args):
 
     prefix, extra = rest[0], rest[1:]
     resolver = {"claude": claude_resolve, "codex": codex_resolve, "kimi": kimi_resolve,
-                "step": step_resolve}[tool]
+                "step": step_resolve, "zcode": zcode_resolve}[tool]
     matches = resolver(prefix)
 
     if len(matches) == 1:
@@ -1444,7 +1511,7 @@ def cmd_resume(args):
         sys.exit(1)
 
     cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd,
-                  "step": step_session_cwd}[tool]
+                  "step": step_session_cwd, "zcode": zcode_session_cwd}[tool]
 
     if forced_cwd:
         if not os.path.isdir(forced_cwd):
@@ -1456,14 +1523,22 @@ def cmd_resume(args):
             if os.path.realpath(forced_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(forced_cwd)
         else:
-            # All four tie a session's transcript to its original directory,
-            # so resuming from here would never show this session to *this*
-            # directory's own resume picker: claude/codex/kimi keep writing
-            # to the original directory's log, and step stops to ask "Fork
-            # this session into current directory? [y/N]" -- with -p that is
-            # a non-interactive exit 1, having written nothing (both checked
-            # against step's binary). A real relocation needs a fresh,
-            # seeded session instead -- which is step's own answer too.
+            # All four terminal tools tie a session's transcript to its
+            # original directory, so resuming from here would never show
+            # this session to *this* directory's own resume picker: claude/
+            # codex/kimi keep writing to the original directory's log, and
+            # step stops to ask "Fork this session into current directory?
+            # [y/N]" -- with -p that is a non-interactive exit 1, nothing
+            # written (both checked against step's binary). A real
+            # relocation needs a fresh, seeded session instead -- which is
+            # step's own answer too. zcode can do neither (its app ties the
+            # session to the directory and no CLI seeds one), so it is
+            # refused outright rather than half-helped.
+            if tool == "zcode":
+                print("cw resume: zcode sessions can't be relocated in place, and no CLI "
+                      "starts a zcode session to relocate to -- open it in "
+                      f"{real_cwd or 'its own directory'}", file=sys.stderr)
+                sys.exit(1)
             print(f"cw resume: {tool} sessions can't be relocated in place -- starting a fresh "
                   f"session in {forced_cwd} with this one's context instead", file=sys.stderr)
             perform_handoff(tool, full_id, tool, extra, forced_cwd=forced_cwd)
@@ -1481,6 +1556,26 @@ def cmd_resume(args):
     elif tool == "step":
         # step takes a path or a partial id, and resumes that session directly
         exec_or_die(["step", "--resume", full_id, *extra])
+    elif tool == "zcode":
+        # No CLI reopens one session and no deep link names one either --
+        # the workspace link is the closest route in (cb's desktop handler
+        # makes the same compromise). Popen, not exec: the GUI is not the
+        # terminal's successor process, and the wrapper should exit once
+        # the app is up.
+        cwd = zcode_session_cwd(full_id)
+        link = zcode_workspace_link(cwd)
+        print(f"cw resume: opening the zcode workspace for this session ({cwd or '?'})", file=sys.stderr)
+        print("cw resume: zcode has no command that opens one conversation -- pick the "
+              "session in the app's task list", file=sys.stderr)
+        try:
+            subprocess.Popen(["zcode", link])
+        except FileNotFoundError:
+            print("cw: 'zcode' not found on PATH", file=sys.stderr)
+            sys.exit(127)
+        except OSError as exc:
+            print(f"cw resume: could not run zcode: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
     else:
         exec_or_die(["kimi", "-S", full_id, *extra])
 

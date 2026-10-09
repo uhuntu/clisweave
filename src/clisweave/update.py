@@ -1,5 +1,7 @@
 """cw update - update clisweave itself, and optionally the underlying
-claude/codex/kimi/step CLIs, which each ship their own self-update command."""
+claude/codex/kimi/step CLIs, which each ship their own self-update command.
+zcode is absent from TOOL_UPDATE_CMD on purpose: it is a desktop app that
+updates itself, and `cw update tools` only iterates this dict."""
 import os
 import shutil
 import subprocess
