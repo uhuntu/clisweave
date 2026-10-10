@@ -641,7 +641,11 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
             sys.exit(rc if rc > 0 else 1)
         sid = zcode_newest_session_since(started)
         if sid:
-            exec_or_die(["zcode", "--resume", sid, *extra])
+            rc = _run_zcode_tui(["zcode", "--resume", sid, *extra])
+            if rc:
+                _zcode_tui_failure_hint(sid, rc)
+                sys.exit(rc)
+            return
         print("cw handoff: could not determine the seeded zcode session -- continue "
               "manually with `zcode -c`", file=sys.stderr)
         return
@@ -1555,6 +1559,30 @@ def resume_by_number(n, extra, forced_cwd=None):
     cmd_resume([entry["tool"], entry["id"], *extra, *cwd_args])
 
 
+def _run_zcode_tui(argv):
+    """The zcode TUI in the foreground, its exit code returned.
+
+    Foreground rather than exec: some installs ship no @zcode/tui (the
+    wrapper delegates to the desktop's core, which imports the TUI package
+    only for TUI mode -- one machine checked), and a TUI start that dies
+    should come back here for a usable hint instead of stranding the user
+    inside a node traceback with the wrapper gone."""
+    try:
+        return subprocess.call(argv)
+    except KeyboardInterrupt:
+        return 130
+    except FileNotFoundError:
+        print("cw: 'zcode' not found on PATH", file=sys.stderr)
+        return 127
+
+
+def _zcode_tui_failure_hint(full_id, rc):
+    print(f"cw resume: the zcode TUI exited with status {rc} -- an install without "
+          "@zcode/tui has no TUI. Resume in the desktop app's task list, or continue "
+          f"headlessly with `zcode --resume {full_id} -p \"<next instruction>\"`",
+          file=sys.stderr)
+
+
 def cmd_resume(args):
     args, forced_cwd = extract_cwd_override(args)
 
@@ -1656,8 +1684,13 @@ def cmd_resume(args):
         if zcode_cli_on_path():
             # A real resume: the CLI reopens the session by id (verified
             # headlessly, same and cross directory), interactively in the
-            # TUI here.
-            exec_or_die(["zcode", "--resume", full_id, *extra])
+            # TUI -- unless this install bundles no TUI, which lands back
+            # here with a hint instead.
+            rc = _run_zcode_tui(["zcode", "--resume", full_id, *extra])
+            if rc:
+                _zcode_tui_failure_hint(full_id, rc)
+                sys.exit(rc)
+            return
         # No CLI -- the desktop deep link is the closest route in (cb's
         # desktop handler makes the same compromise). Popen, not exec: the
         # GUI is not the terminal's successor process, and the wrapper

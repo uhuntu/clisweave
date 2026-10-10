@@ -387,24 +387,43 @@ def test_a_handoff_into_zcode_is_refused_without_the_cli(monkeypatch, tmp_path, 
 def test_a_handoff_into_zcode_seeds_via_the_cli(monkeypatch, tmp_path):
     """With the CLI on PATH, `zcode -p <seed>` persists a session (checked:
     default persistence, no id hint printed) and the run is resumed
-    interactively -- the same dance kimi needs."""
+    interactively in the TUI -- the same dance kimi needs."""
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
     monkeypatch.setattr(sessions, "session_handoff_details",
                         lambda tool, sid: (str(tmp_path), "# export\n\nthe body"))
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
-    seeds = []
+    calls = []
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: seeds.append(argv) or 0)
+                        lambda argv: calls.append(argv) or 0)
     monkeypatch.setattr(sessions, "zcode_newest_session_since",
                         lambda started: "sess_fresh01-0000")
-    calls = []
-    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
 
     sessions.perform_handoff("claude", "019abc-source", "zcode", [])
 
-    assert seeds and seeds[0][0] == "zcode" and seeds[0][1] == "-p"
-    assert "Continue the work from this claude session" in seeds[0][2]
-    assert calls == [["zcode", "--resume", "sess_fresh01-0000"]]
+    assert len(calls) == 2
+    assert calls[0][0] == "zcode" and calls[0][1] == "-p"
+    assert "Continue the work from this claude session" in calls[0][2]
+    assert calls[1] == ["zcode", "--resume", "sess_fresh01-0000"]
+
+
+def test_a_zcode_handoff_lands_on_a_hint_when_the_tui_is_missing(monkeypatch, tmp_path, capsys):
+    """The seed run is headless and succeeds on a TUI-less install; the
+    interactive resume after it is what dies, and it lands on the hint."""
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "session_handoff_details",
+                        lambda tool, sid: (str(tmp_path), "# export\n\nthe body"))
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    responses = iter([0, 1])  # seed ok, TUI gone
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv: next(responses))
+    monkeypatch.setattr(sessions, "zcode_newest_session_since",
+                        lambda started: "sess_fresh03-0000")
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.perform_handoff("claude", "019abc-source", "zcode", [])
+
+    assert exc_info.value.code == 1
+    assert "@zcode/tui" in capsys.readouterr().err
 
 
 def test_the_handoff_details_reach_the_store_directly(tmp_path):
@@ -420,20 +439,38 @@ def test_the_handoff_details_reach_the_store_directly(tmp_path):
 
 def test_resume_reopens_the_session_through_the_cli(monkeypatch, tmp_path):
     """The CLI's `--resume <id>` is a real resume (verified headlessly, same
-    and cross directory); the TUI opens rooted in the session's own
-    directory, where the continued work lives."""
+    and cross directory); the TUI runs in the foreground, rooted in the
+    session's own directory, where the continued work lives."""
     workdir = tmp_path / "JSearch"
     workdir.mkdir()
     monkeypatch.chdir(tmp_path)  # NOT the session's directory: resume must switch
     one_session(tmp_path, cwd=str(workdir))
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
     calls = []
-    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", SID])
 
     assert calls == [["zcode", "--resume", SID]]
     assert os.path.realpath(os.getcwd()) == os.path.realpath(workdir)
+
+
+def test_resume_lands_on_a_hint_when_this_install_has_no_tui(monkeypatch, tmp_path, capsys):
+    """One checked install ships no @zcode/tui: the TUI start dies inside
+    node, and the row comes back here -- with the desktop task list and the
+    headless continuation as the ways forward, not a stranded traceback."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions.subprocess, "call", lambda argv: 1)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.cmd_resume(["zcode", SID])
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "@zcode/tui" in err
+    assert f"zcode --resume {SID} -p" in err
 
 
 def test_resume_falls_back_to_the_deep_link_without_the_cli(monkeypatch, tmp_path, capsys):
@@ -489,11 +526,14 @@ def test_resume_relocation_seeds_a_fresh_zcode_session(monkeypatch, tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()
     calls = []
-    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", SID, "--cwd", str(other)])
 
-    assert calls == [["zcode", "--resume", "sess_fresh02-0000"]]
+    assert len(calls) == 2
+    assert calls[0][0] == "zcode" and calls[0][1] == "-p"
+    assert calls[1] == ["zcode", "--resume", "sess_fresh02-0000"]
 
 
 def test_resume_by_prefix_resolves_through_the_store(monkeypatch, tmp_path):
@@ -503,7 +543,8 @@ def test_resume_by_prefix_resolves_through_the_store(monkeypatch, tmp_path):
     one_session(tmp_path, cwd=str(workdir))
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
     calls = []
-    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", "sess_90bd"])
 
