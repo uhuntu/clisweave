@@ -199,13 +199,18 @@ def build_command(tool, rest):
             # `codebuddy --help` (2.161.4) -- the same flag claude takes.
             cmd.append("--dangerously-skip-permissions")
     elif tool == "zcode":
-        # A desktop app, not a terminal CLI: there are no flags to translate
-        # and no stdin/stdout session to attach to. The one thing `cw zcode`
-        # can do is open the app on the directory you are standing in, via
-        # the workspace deep link -- the only route it registers.
+        # A desktop app plus a terminal CLI answer to the name `zcode`. With
+        # the CLI on PATH, `cw zcode` opens its TUI rooted in the directory
+        # you are standing in (its /resume picker lists this directory's
+        # sessions); with only the desktop app, it goes through the
+        # workspace deep link -- the only route that names a directory.
+        # Either way no wrapper flag applies.
         if print_ or continue_session or model or add_dirs or yolo or trailing:
-            raise UsageError("zcode is a desktop app -- no wrapper flags apply; run `zcode` directly")
-        cmd = ["zcode", sessions.zcode_workspace_link(os.getcwd())]
+            raise UsageError("zcode takes no wrapper flags -- run `zcode` directly")
+        if sessions.zcode_cli_on_path():
+            cmd = ["zcode"]
+        else:
+            cmd = ["zcode", sessions.zcode_workspace_link(os.getcwd())]
     else:  # kimi
         cmd = ["kimi"]
         if print_:

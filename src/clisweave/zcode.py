@@ -1,12 +1,23 @@
-"""Reader for the ZCode app's session store: a SQLite database under
-~/.zcode/cli/db (opencode-style `session`/`message`/`part` tables, WAL mode).
+"""Reader for the ZCode session store: a SQLite database under
+~/.zcode/cli/db (opencode-style `session`/`message`/`part` tables, WAL mode)
+shared by the ZCode desktop app and the `zcode` terminal CLI.
 
-Unlike the other four tools there is no per-session transcript file to read
--- the conversation lives in the `part` table as typed JSON rows (text,
-reasoning, tool, file, ...), the cwd is `session.directory`, and the title
-is a stored one ZCode's own auto-titler keeps updated. ZCode is a desktop
-app with no CLI that reopens one session, so this module only reads; the
-resume flow opens the workspace deep link and says so.
+Unlike the file-backed tools there is no per-session transcript file -- the
+conversation lives in the `part` table as typed JSON rows (text, reasoning,
+tool, file, ...), the cwd is `session.directory`, and the title is a stored
+one ZCode's own auto-titler keeps updated.
+
+Two executables answer to the name `zcode`: the desktop app (an Electron
+binary, e.g. /usr/bin/zcode) and a terminal CLI that often shadows it on
+PATH (~/.local/bin/zcode, v0.16.9 here). They are told apart by their file
+headers -- the CLI ships as a script wrapper, the desktop as an ELF binary
+-- because probing either with --help/--version has a side effect on the
+desktop one: it boots the GUI (checked against both installs). When the
+CLI is the one on PATH, resume and handoff seeding are real:
+`zcode --resume <sess_...>` reopens one session, and `zcode -p <seed>`
+persists a headless run that can then be resumed -- the same two-step a
+kimi handoff needs. Only the desktop falls back to the workspace deep
+link, which opens the right workspace but no particular session.
 
 The store belongs to a live app, so every connection is read-only (`mode=ro`
 -- the same contract cb.py's desktop collector uses) and a missing file or
@@ -16,6 +27,7 @@ transactions are atomic.
 """
 import json
 import os
+import shutil
 import sqlite3
 import urllib.parse
 
@@ -359,6 +371,45 @@ def zcode_last_message(sid):
             continue
         return " ".join(text.split())
     return None
+
+
+def zcode_cli_on_path():
+    """True when the `zcode` on PATH is the terminal CLI -- the one that
+    resumes a session by id and seeds one headlessly -- rather than the
+    desktop app's launcher.
+
+    Told apart by file header, never by running them: the CLI ships as a
+    script wrapper (`#!`), the desktop as an ELF binary, and asking either
+    --help or --version boots the desktop's GUI as a side effect (checked
+    against both installs). A machine with only the desktop reads False,
+    and every caller falls back to the deep link."""
+    exe = shutil.which("zcode")
+    if not exe:
+        return False
+    try:
+        with open(exe, "rb") as fh:
+            return fh.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def zcode_newest_session_since(started):
+    """The newest zcode session created at/after `started` (epoch seconds)
+    whose directory is the current one -- the session a just-finished
+    `zcode -p` seed run persisted, recovered from the store the same way
+    kimi's is (the CLI prints no id hint of its own)."""
+    best_id = None
+    best_ts = None
+    for r in zcode_light_records(show_all=True):
+        cwd = r.get("cwd")
+        if not cwd or os.path.realpath(cwd) != os.path.realpath(os.getcwd()):
+            continue
+        ts = r.get("ts") or 0
+        if ts < started - 2:
+            continue
+        if best_ts is None or ts >= best_ts:
+            best_id, best_ts = r["id"], ts
+    return best_id
 
 
 def zcode_workspace_link(directory):

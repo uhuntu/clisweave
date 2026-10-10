@@ -375,12 +375,36 @@ def test_handoff_exports_the_conversation_from_zcode(monkeypatch, tmp_path):
     assert "the lock was stale" not in body
 
 
-def test_a_handoff_into_zcode_is_refused(monkeypatch, tmp_path, capsys):
-    """zcode is a desktop app with no CLI that starts a session -- there is
+def test_a_handoff_into_zcode_is_refused_without_the_cli(monkeypatch, tmp_path, capsys):
+    """Without the CLI the desktop app starts no session from a prompt --
     nothing to seed, so the command refuses instead of exporting into a void."""
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: False)
     with pytest.raises(SystemExit):
         sessions.perform_handoff("claude", SID, "zcode", [])
-    assert "no CLI that starts a session" in capsys.readouterr().err
+    assert "starts no session from a prompt" in capsys.readouterr().err
+
+
+def test_a_handoff_into_zcode_seeds_via_the_cli(monkeypatch, tmp_path):
+    """With the CLI on PATH, `zcode -p <seed>` persists a session (checked:
+    default persistence, no id hint printed) and the run is resumed
+    interactively -- the same dance kimi needs."""
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "session_handoff_details",
+                        lambda tool, sid: (str(tmp_path), "# export\n\nthe body"))
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    seeds = []
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv: seeds.append(argv) or 0)
+    monkeypatch.setattr(sessions, "zcode_newest_session_since",
+                        lambda started: "sess_fresh01-0000")
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.perform_handoff("claude", "019abc-source", "zcode", [])
+
+    assert seeds and seeds[0][0] == "zcode" and seeds[0][1] == "-p"
+    assert "Continue the work from this claude session" in seeds[0][2]
+    assert calls == [["zcode", "--resume", "sess_fresh01-0000"]]
 
 
 def test_the_handoff_details_reach_the_store_directly(tmp_path):
@@ -394,13 +418,32 @@ def test_the_handoff_details_reach_the_store_directly(tmp_path):
 
 # ---------- resume ----------
 
-def test_resume_opens_the_workspace_and_says_what_it_cannot_do(monkeypatch, tmp_path, capsys):
-    """No CLI and no deep link reopens one session -- the workspace link is
-    the closest route, and the notice says so rather than pretending."""
+def test_resume_reopens_the_session_through_the_cli(monkeypatch, tmp_path):
+    """The CLI's `--resume <id>` is a real resume (verified headlessly, same
+    and cross directory); the TUI opens rooted in the session's own
+    directory, where the continued work lives."""
+    workdir = tmp_path / "JSearch"
+    workdir.mkdir()
+    monkeypatch.chdir(tmp_path)  # NOT the session's directory: resume must switch
+    one_session(tmp_path, cwd=str(workdir))
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.cmd_resume(["zcode", SID])
+
+    assert calls == [["zcode", "--resume", SID]]
+    assert os.path.realpath(os.getcwd()) == os.path.realpath(workdir)
+
+
+def test_resume_falls_back_to_the_deep_link_without_the_cli(monkeypatch, tmp_path, capsys):
+    """Desktop-only machine: the workspace link is the closest route, and
+    the notice says so rather than pretending."""
     workdir = tmp_path / "JSearch"
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     one_session(tmp_path, cwd=str(workdir))
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: False)
     launched = []
     monkeypatch.setattr(sessions.subprocess, "Popen", lambda argv: launched.append(argv))
 
@@ -411,26 +454,46 @@ def test_resume_opens_the_workspace_and_says_what_it_cannot_do(monkeypatch, tmp_
     assert link.startswith("zcode://workspace/open?path=%2F")
     assert link == sessions.zcode_workspace_link(str(workdir))
     err = capsys.readouterr().err
-    assert "pick the session in the app's task list" in err
+    assert "pick the session in its task list" in err
 
 
-def test_resume_without_an_id_points_at_the_app(tmp_path, capsys):
-    """The app is its own session picker; nothing is launched."""
+def test_resume_without_an_id_opens_the_cli_tui(monkeypatch, tmp_path, capsys):
+    """With the CLI: its TUI, rooted here, where /resume lists this
+    directory's sessions. Without it: the guidance message, nothing launched."""
     one_session(tmp_path)
+
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
     sessions.cmd_resume(["zcode"])
-    assert "pick the session in its task list" in capsys.readouterr().err
+    assert calls == [["zcode"]]
+
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: False)
+    sessions.cmd_resume(["zcode"])
+    assert "the zcode CLI is not on PATH" in capsys.readouterr().err
 
 
-def test_resume_cannot_relocate_a_zcode_session(tmp_path, capsys):
-    """Every tool ties a session to its directory, and the other tools'
-    answer -- a fresh seeded session in the new one -- needs a CLI zcode
-    does not have. Refused, with the directory named."""
-    one_session(tmp_path)
+def test_resume_relocation_seeds_a_fresh_zcode_session(monkeypatch, tmp_path):
+    """Sessions are tied to their directory like every other tool's, so a
+    --cwd elsewhere exports and seeds a new session in place -- the CLI
+    seeds it, so the generic handoff path applies."""
+    workdir = tmp_path / "JSearch"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    one_session(tmp_path, cwd=str(workdir))
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions.subprocess, "call", lambda argv: 0)
+    monkeypatch.setattr(sessions, "zcode_newest_session_since",
+                        lambda started: "sess_fresh02-0000")
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     other = tmp_path / "elsewhere"
     other.mkdir()
-    with pytest.raises(SystemExit):
-        sessions.cmd_resume(["zcode", SID, "--cwd", str(other)])
-    assert "can't be relocated in place" in capsys.readouterr().err
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    sessions.cmd_resume(["zcode", SID, "--cwd", str(other)])
+
+    assert calls == [["zcode", "--resume", "sess_fresh02-0000"]]
 
 
 def test_resume_by_prefix_resolves_through_the_store(monkeypatch, tmp_path):
@@ -438,19 +501,28 @@ def test_resume_by_prefix_resolves_through_the_store(monkeypatch, tmp_path):
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     one_session(tmp_path, cwd=str(workdir))
-    launched = []
-    monkeypatch.setattr(sessions.subprocess, "Popen", lambda argv: launched.append(argv))
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
 
     sessions.cmd_resume(["zcode", "sess_90bd"])
 
-    assert launched and launched[0][1] == sessions.zcode_workspace_link(str(workdir))
+    assert calls == [["zcode", "--resume", SID]]
 
 
 # ---------- the wrapper side ----------
 
-def test_bare_cw_zcode_opens_the_app_here():
-    cmd = cli.build_command("zcode", [])
-    assert cmd == ["zcode", sessions.zcode_workspace_link(os.getcwd())]
+def test_bare_cw_zcode_opens_the_cli_tui(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    assert cli.build_command("zcode", []) == ["zcode"]
+
+
+def test_bare_cw_zcode_falls_back_to_the_deep_link(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: False)
+    assert cli.build_command("zcode", []) == \
+        ["zcode", sessions.zcode_workspace_link(os.getcwd())]
 
 
 def test_zcode_takes_no_wrapper_flags():

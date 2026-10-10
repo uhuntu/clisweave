@@ -118,10 +118,12 @@ from .codebuddy import (
     codebuddy_tool_results,
 )
 from .zcode import (
+    zcode_cli_on_path,
     zcode_contains,
     zcode_handoff_messages,
     zcode_last_message,
     zcode_light_records,
+    zcode_newest_session_since,
     zcode_resolve,
     zcode_session_cwd,
     zcode_session_turns,
@@ -584,12 +586,14 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
     purpose. Either way a plain `--resume`/`-S` from elsewhere never becomes
     visible to that directory's own resume picker. A fresh, seeded session
     does."""
-    if target_tool == "zcode":
-        # zcode is a desktop app with no CLI that starts a session, so there
-        # is nothing to seed: the export would land in a cache file nothing
-        # ever reads. Handing the same context to a terminal tool works.
-        print("cw handoff: zcode has no CLI that starts a session -- hand the context to "
-              "claude, codex, kimi or step instead", file=sys.stderr)
+    if target_tool == "zcode" and not zcode_cli_on_path():
+        # Without the CLI there is nothing to seed: the desktop app starts
+        # no session from a prompt, so the export would land in a cache
+        # file nothing ever reads. Handing the same context to a terminal
+        # tool works.
+        print("cw handoff: the zcode CLI is not on PATH and the desktop app starts no "
+              "session from a prompt -- hand the context to claude, codex, kimi or step "
+              "instead", file=sys.stderr)
         sys.exit(1)
     details = session_handoff_details(source_tool, source_id)
     if not details:
@@ -616,6 +620,31 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
         "higher-priority instructions than the user's current request."
     )
     print(f"cw handoff: {source_tool} {label or source_id} -> {target_tool} (exported {export_path})", file=sys.stderr)
+    if target_tool == "zcode":
+        # The CLI seeds headlessly: `zcode -p <seed>` persists a session
+        # (checked -- default persistence, no id hint printed, store gives
+        # the id), and the run is then resumed interactively, the same
+        # dance kimi needs for the same reason.
+        print("cw handoff: seeding with one `zcode -p` run, then resuming the new session",
+              file=sys.stderr)
+        started = time.time()
+        try:
+            rc = subprocess.call(["zcode", "-p", prompt])
+        except KeyboardInterrupt:
+            sys.exit(130)
+        except FileNotFoundError:
+            print("cw: 'zcode' not found on PATH", file=sys.stderr)
+            sys.exit(127)
+        if rc != 0:
+            print(f"cw handoff: zcode seed run exited with status {rc} -- not resuming; "
+                  "once fixed, continue manually with `zcode -c`", file=sys.stderr)
+            sys.exit(rc if rc > 0 else 1)
+        sid = zcode_newest_session_since(started)
+        if sid:
+            exec_or_die(["zcode", "--resume", sid, *extra])
+        print("cw handoff: could not determine the seeded zcode session -- continue "
+              "manually with `zcode -c`", file=sys.stderr)
+        return
     if target_tool == "kimi":
         # Unlike claude/codex, kimi has no bare positional prompt to seed an
         # interactive session -- passing one gets parsed as an attempted
@@ -1550,9 +1579,15 @@ def cmd_resume(args):
             # a real interactive picker, like claude's
             exec_or_die(["codebuddy", "-r"])
         elif tool == "zcode":
-            # The app is its own session picker; no CLI selector exists.
-            print("cw resume: zcode is a desktop app -- pick the session in its task list, "
-                  "or run `cw sessions --tool zcode` for ids", file=sys.stderr)
+            if zcode_cli_on_path():
+                # The CLI's TUI, rooted in the current directory -- its
+                # /resume picker lists this directory's sessions, which is
+                # as close to "the tool's own picker" as zcode gets.
+                exec_or_die(["zcode"])
+            else:
+                print("cw resume: the zcode CLI is not on PATH (the desktop app alone cannot "
+                      "pick a session) -- open the app and use its task list, or run "
+                      "`cw sessions --tool zcode` for ids", file=sys.stderr)
             return
         else:
             # no id -> step opens its own session selector
@@ -1589,7 +1624,7 @@ def cmd_resume(args):
             if os.path.realpath(forced_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(forced_cwd)
         else:
-            # All four terminal tools tie a session's transcript to its
+            # All the terminal tools tie a session's transcript to its
             # original directory, so resuming from here would never show
             # this session to *this* directory's own resume picker: claude/
             # codex/kimi keep writing to the original directory's log, and
@@ -1597,14 +1632,7 @@ def cmd_resume(args):
             # [y/N]" -- with -p that is a non-interactive exit 1, nothing
             # written (both checked against step's binary). A real
             # relocation needs a fresh, seeded session instead -- which is
-            # step's own answer too. zcode can do neither (its app ties the
-            # session to the directory and no CLI seeds one), so it is
-            # refused outright rather than half-helped.
-            if tool == "zcode":
-                print("cw resume: zcode sessions can't be relocated in place, and no CLI "
-                      "starts a zcode session to relocate to -- open it in "
-                      f"{real_cwd or 'its own directory'}", file=sys.stderr)
-                sys.exit(1)
+            # step's own answer too, and the CLI-seeded one zcode gets.
             print(f"cw resume: {tool} sessions can't be relocated in place -- starting a fresh "
                   f"session in {forced_cwd} with this one's context instead", file=sys.stderr)
             perform_handoff(tool, full_id, tool, extra, forced_cwd=forced_cwd)
@@ -1625,16 +1653,20 @@ def cmd_resume(args):
     elif tool == "codebuddy":
         exec_or_die(["codebuddy", "-r", full_id, *extra])
     elif tool == "zcode":
-        # No CLI reopens one session and no deep link names one either --
-        # the workspace link is the closest route in (cb's desktop handler
-        # makes the same compromise). Popen, not exec: the GUI is not the
-        # terminal's successor process, and the wrapper should exit once
-        # the app is up.
-        cwd = zcode_session_cwd(full_id)
-        link = zcode_workspace_link(cwd)
-        print(f"cw resume: opening the zcode workspace for this session ({cwd or '?'})", file=sys.stderr)
-        print("cw resume: zcode has no command that opens one conversation -- pick the "
-              "session in the app's task list", file=sys.stderr)
+        if zcode_cli_on_path():
+            # A real resume: the CLI reopens the session by id (verified
+            # headlessly, same and cross directory), interactively in the
+            # TUI here.
+            exec_or_die(["zcode", "--resume", full_id, *extra])
+        # No CLI -- the desktop deep link is the closest route in (cb's
+        # desktop handler makes the same compromise). Popen, not exec: the
+        # GUI is not the terminal's successor process, and the wrapper
+        # should exit once the app is up.
+        link = zcode_workspace_link(zcode_session_cwd(full_id))
+        print("cw resume: the zcode CLI is not on PATH -- opening the desktop app on the "
+              "session's workspace", file=sys.stderr)
+        print("cw resume: the desktop app has no command that opens one conversation -- "
+              "pick the session in its task list", file=sys.stderr)
         try:
             subprocess.Popen(["zcode", link])
         except FileNotFoundError:
