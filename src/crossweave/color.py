@@ -8,7 +8,7 @@ the rows that belong to the directory you are standing in stand out.
 None of that may leak escape codes into a pipe, a file, a CI log or a
 console that cannot render them -- which is most of them. Color is on only
 when the output stream says it is a terminal, the environment has not said
-no (NO_COLOR, TERM=dumb), and CLISWEAVE_COLOR has not overridden it. The
+no (NO_COLOR, TERM=dumb), and CROSSWEAVE_COLOR has not overridden it. The
 probe result is cached per process; tests set `_STATE` directly.
 
 No dependency is added for this (the README promises dependency-free), so
@@ -68,7 +68,7 @@ def _enable_windows_vt():
 
 def _decide(stream=None):
     """True when color should be emitted to `stream` (default stdout)."""
-    override = os.environ.get("CLISWEAVE_COLOR", "auto").strip().lower()
+    override = os.environ.get("CROSSWEAVE_COLOR", "auto").strip().lower()
     if override in ("never", "no", "off", "0"):
         return False
     stream = stream if stream is not None else sys.stdout

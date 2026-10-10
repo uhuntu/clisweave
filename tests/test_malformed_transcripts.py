@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from clisweave import codex, common, sessions
+from crossweave import codex, common, sessions
 
 
 @pytest.fixture(autouse=True)

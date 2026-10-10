@@ -1,72 +1,72 @@
-# clisweave
+# crossweave
 
-[![test](https://github.com/uhuntu/clisweave/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/clisweave/actions/workflows/test.yml)
+[![test](https://github.com/uhuntu/crossweave/actions/workflows/test.yml/badge.svg)](https://github.com/uhuntu/crossweave/actions/workflows/test.yml)
 
 A tiny, dependency-free wrapper that weaves five AI coding-agent CLIs — [Claude Code](https://claude.com/product/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Kimi CLI](https://www.kimi-cli.com/), [step](https://github.com/stepfun-ai/Step-Code), and CodeBuddy's CLI — behind one set of flags, plus cross-tool session discovery, resume, and handoff — and reads the ZCode desktop app's session store alongside them, so its sessions show up in the same listing, search, and handoff flow.
 
-No daemon, no config file, no build step — just a small Python package (`src/clisweave/`) that reads each tool's own on-disk session store directly.
+No daemon, no config file, no build step — just a small Python package (`src/crossweave/`) that reads each tool's own on-disk session store directly. Formerly named `clisweave` (and `aimux` before that); the `cw` command was never renamed.
 
-![clisweave demo: a unified session list across claude/codex/kimi/step/zcode, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
+![crossweave demo: a unified session list across claude/codex/kimi/step/zcode, then an LLM-judged topic search narrowing it down to the one relevant session](assets/demo.gif)
 
 ## Install
 
-**Via pip** (the package is named `clisweave` on PyPI; the commands installed are `cw`, `clisweave`, `ai-sessions`, `cb` (see [`cb`](#cb-codebuddy), for CodeBuddy), plus the legacy `ai`, `aim` and `aimux` aliases — `ai` is kept only so existing scripts keep working, and is too generic a name to rely on):
+**Via pip** (the package is named `crossweave` on PyPI; the commands installed are `cw`, `crossweave` and `cb` (see [`cb`](#cb-codebuddy), for CodeBuddy), plus the legacy `clisweave`, `ai`, `aim` and `aimux` aliases kept so existing scripts and links keep working, and a legacy `ai-sessions` that is no longer advertised — an active PyPI package of the same name owns that word, and `cw sessions` / `cw resume` is the same surface):
 
 ```bash
-pip install clisweave
+pip install crossweave
 ```
 
 **Via curl** (macOS/Linux, or Windows with Git Bash/WSL), one line, no manual clone:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/uhuntu/clisweave/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/uhuntu/crossweave/master/install.sh | bash
 ```
 
 **Via irm** (Windows PowerShell, no Git Bash/WSL/Cygwin needed):
 
 ```powershell
-irm https://raw.githubusercontent.com/uhuntu/clisweave/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/uhuntu/crossweave/master/install.ps1 | iex
 ```
 
 **Via git**, if you'd rather clone it yourself first:
 
 ```bash
-git clone https://github.com/uhuntu/clisweave.git
-cd clisweave && ./install.sh        # Windows PowerShell: .\install.ps1
+git clone https://github.com/uhuntu/crossweave.git
+cd crossweave && ./install.sh        # Windows PowerShell: .\install.ps1
 ```
 
-Whichever of the last three you use, it clones the repo to `~/.local/share/clisweave` first (override with `CLISWEAVE_REPO_DIR`), then wires up `cw`, `cb`, `clisweave`, `ai-sessions`, and the legacy `aim`/`aimux` aliases (an existing `ai` link is left working, but a fresh install no longer creates one) in `~/.local/bin` (override with `CLISWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `AIMUX_REPO_DIR` and `AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
+Whichever of the last three you use, it clones the repo to `~/.local/share/crossweave` first (override with `CROSSWEAVE_REPO_DIR`), then wires up `cw`, `cb`, `crossweave`, and the `clisweave`/`aim`/`aimux` compatibility aliases in `~/.local/bin` (override with `CROSSWEAVE_BIN_DIR`) — as symlinks on `install.sh`, or native `.cmd` launchers on `install.ps1`. Existing `ai` and `ai-sessions` links keep working, but a fresh install creates neither (`ai` is too generic a name to own, and an active PyPI package owns the `ai-sessions` word; `cw sessions` / `cw resume` is the same surface). To avoid taking over an unrelated command, the standalone installers skip `cw` and `cb` with a warning if either already exists. The old `CLISWEAVE_REPO_DIR`/`CLISWEAVE_BIN_DIR` and `AIMUX_REPO_DIR`/`AIMUX_BIN_DIR` variables remain accepted for compatibility. Nothing is copied — the clone stays the source of truth.
 
 Requires `claude`, `codex`, `kimi`, `step` and/or `codebuddy` already installed and on `PATH` (only the ones you actually use need to be present). ZCode needs nothing on `PATH` for its sessions to be *listed* — its SQLite store under `~/.zcode/cli/db` is read directly — but the full experience (`cw zcode`, `cw resume zcode <id>`, handing context *to* zcode) wants the `zcode` CLI on PATH; the desktop app alone still lists sessions and gets the workspace deep link.
 
 > **Windows note:** running the curl one-liner from PowerShell/cmd (rather than Git Bash) can invoke the WSL `bash` launcher by mistake instead of Git's — use `irm` above, or run curl from Git Bash directly. `install.sh` also copes if Git Bash lacks symlink privilege (falls back to a generated launcher instead of a broken copy) or `python3` on `PATH` is the Microsoft Store's no-op stub (probes `python`/`py -3` instead). Files installed by `install.sh` are still extensionless with a shebang line, though, which PowerShell can't execute directly — `install.ps1`'s `.cmd` launchers don't have that problem. If you stick with `install.sh`, call `cw` from Git Bash instead, or add a function to your PowerShell `$PROFILE`:
 > ```powershell
-> function cw { & "C:\Path\To\python.exe" "$HOME\.local\share\clisweave\bin\cw" @args }
+> function cw { & "C:\Path\To\python.exe" "$HOME\.local\share\crossweave\bin\cw" @args }
 > ```
 
 
 ## Update
 
 ```bash
-cw update        # update clisweave itself
+cw update        # update crossweave itself
 cw update tools  # update claude, codex, kimi, and step (whichever are installed)
 cw update all    # both
 ```
 
-`cw update` detects how clisweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade clisweave` for a pip install.
+`cw update` detects how crossweave itself was installed and does the right thing: `git pull --ff-only` for a curl/git install, `pip install --upgrade crossweave` for a pip install.
 
 `cw update tools` runs each CLI's own update command (`claude update`, `codex update`, `kimi update --yes`), skipping any that aren't installed. If one fails, the others still run; the exit code reflects the worst failure. ZCode is not attempted — it is a desktop app that updates itself.
 
 Two fallbacks exist for flaky networks, both confirmed live on 2026-09-24:
 
 - **Retries**: `claude` (no fallback mirror; can hit its own internal download deadline) and `kimi` (its update check intermittently hangs at connect time) are retried on failure.
-- **Proxy fallback**: set `CLISWEAVE_UPDATE_PROXY` (e.g. `http://127.0.0.1:7897`) and any failed tool update retries through that proxy. The first attempt is always direct, so this only ever kicks in as a fallback. This exists because some networks sever long TLS transfers mid-flight — codex's ~146MB asset died at ~60MB on every direct attempt, resume ignored, while the same transfer through a working local proxy finished in under a minute. `kimi update` passes `--yes` so its interactive picker can't abort the run.
+- **Proxy fallback**: set `CROSSWEAVE_UPDATE_PROXY` (e.g. `http://127.0.0.1:7897`) and any failed tool update retries through that proxy. The first attempt is always direct, so this only ever kicks in as a fallback. This exists because some networks sever long TLS transfers mid-flight — codex's ~146MB asset died at ~60MB on every direct attempt, resume ignored, while the same transfer through a working local proxy finished in under a minute. `kimi update` passes `--yes` so its interactive picker can't abort the run.
 
-Equivalent manual commands for updating clisweave itself, if you'd rather:
+Equivalent manual commands for updating crossweave itself, if you'd rather:
 
-- **pip**: `pip install --upgrade clisweave`
+- **pip**: `pip install --upgrade crossweave`
 - **curl**: re-run the same one-liner — it fast-forwards the existing clone before relinking
-- **git**: `git -C /path/to/clisweave pull` — the symlinks point straight into the repo, so this alone is enough
+- **git**: `git -C /path/to/crossweave pull` — the symlinks point straight into the repo, so this alone is enough
 
 ## Usage
 
@@ -113,11 +113,11 @@ One table: the row number, the tool, how long ago the session ran, its id, the d
 
 Under each row, dim, is where that session left off — the last thing anyone actually said in it. A title says where a conversation *started* ("fix the nfc lock"); the line under it says where it got to, which is the difference between a table and an answer to "where was I?". A trailing system reminder or a pasted log is skipped for the real last words, and a one-turn session shows nothing under its row rather than repeating its title.
 
-The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CLISWEAVE_COLOR=never`; `CLISWEAVE_COLOR=always` forces it on (useful for `cw | less -R`).
+The tool column carries a hue when the output is a terminal, the id/when/turns columns go dim and the header is bold, so the titles are what your eye lands on. Color is skipped when the output is a pipe or a file, when `NO_COLOR` is set, when `TERM` is `dumb`, or with `CROSSWEAVE_COLOR=never`; `CROSSWEAVE_COLOR=always` forces it on (useful for `cw | less -R`).
 
 On a narrow terminal the directory column shrinks first and the turns column is dropped before the title loses its room. Columns are measured in display width rather than code points, so a title in Chinese keeps the table lined up — and a turn count comes from the user messages each tool records (claude's tool results are not turns).
 
-To switch agents, put the target tool after the row number: `cw 3 codex`. Clisweave exports the complete textual conversation to `~/.cache/clisweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
+To switch agents, put the target tool after the row number: `cw 3 codex`. Crossweave exports the complete textual conversation to `~/.cache/crossweave/handoffs/`, changes to its original working directory, and starts a new target-tool session with a prompt that asks it to read the export, summarize it, and continue the work. If the named tool already owns that row, the command simply resumes the original session. In listings, a session started this way is titled `(handoff) <topic>` after the session it continues (following a chain of handoffs back to the original), rather than by its own generated "Continue codex session ..." seed.
 
 One exception: kimi cannot open an interactive session with an initial prompt (a bare prompt parses as a subcommand name), so a handoff to it runs the seed as a one-shot `kimi -p` and then automatically resumes the session that run persisted (`kimi -S <id>`), dropping you into the interactive continuation with the summary already in its history. If the seed run fails, nothing is resumed — the error is reported, and you pick up with `kimi -c`.
 
@@ -157,7 +157,7 @@ Anything after a literal `--`, or any flag this wrapper doesn't recognize, passe
 
 ## How session listing works
 
-`ai-sessions` reads each tool's native session storage — no shared index, no background process:
+`cw sessions` reads each tool's native session storage — no shared index, no background process:
 
 - **claude**: `~/.claude/projects/*/*.jsonl`
 - **codex**: `~/.codex/sessions/**/*.jsonl`, plus `~/.codex/session_index.jsonl` for auto-generated titles

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from clisweave import codebuddy, codex, common, sessions, step, zcode
+from crossweave import codebuddy, codex, common, sessions, step, zcode
 
 
 @pytest.fixture(autouse=True)
@@ -1189,7 +1189,7 @@ def test_claude_title_keeps_stored_title_that_names_the_work(tmp_path):
 def test_claude_title_skips_resume_seed_from_another_tool(tmp_path):
     """Regression test: some sessions in this setup open with a bare
     "Continue from where you left off." written by another tool (not
-    clisweave's own seed, which names the source session) -- a listing
+    crossweave's own seed, which names the source session) -- a listing
     showed it as a title, and it propagated into the child session `ai
     handoff` titles by its source's title."""
     session_file = tmp_path / "s.jsonl"
@@ -1686,7 +1686,7 @@ def test_kimi_title_skips_scheduled_task_reminder(tmp_path):
     assert sessions.kimi_title(str(sess_dir)) == "did the timer fire?"
 
 
-def test_kimi_title_skips_clisweave_own_judge_prompt(tmp_path):
+def test_kimi_title_skips_crossweave_own_judge_prompt(tmp_path):
     """Regression test: `ai search --judge kimi` starts a real kimi session
     whose opening message is the judge instruction, so every such row was
     titled "You are filtering a list of past AI coding-assistant
@@ -1741,7 +1741,7 @@ def test_claude_title_uses_placeholder_when_session_is_only_the_judge_prompt(tmp
     assert title == "ai search judge"
 
 
-def test_claude_title_skips_clisweave_own_judge_prompt(tmp_path):
+def test_claude_title_skips_crossweave_own_judge_prompt(tmp_path):
     session_file = tmp_path / "s.jsonl"
     session_file.write_text(
         json.dumps({"type": "user", "message": {
@@ -2595,7 +2595,7 @@ def test_cmd_list_limit_all_shows_everything(monkeypatch, tmp_path, capsys):
 
 
 def test_cmd_list_omits_sessions_a_tool_started_for_itself(monkeypatch, tmp_path, capsys):
-    """Codex's approval reviews and clisweave's judge runs are byproducts,
+    """Codex's approval reviews and crossweave's judge runs are byproducts,
     not conversations -- and one appears per command approved / per search,
     so they push real rows off the listing and out of `ai <N>` numbering."""
     codex_home = tmp_path / ".codex"

@@ -405,10 +405,10 @@ def zcode_cli_on_path():
 # one dies the same death -- so the fact is remembered per install rather
 # than re-learned on every resume. Keyed by the executable's identity (path,
 # size, mtime), which is what invalidates the memo on its own: a ZCode that
-# later bundles the package is a different file on PATH. Lives in clisweave's
+# later bundles the package is a different file on PATH. Lives in crossweave's
 # cache dir beside the listing cache, and a missing or unreadable memo simply
 # reads as "not known" -- the memo must never be the reason a resume fails.
-ZCODE_TUI_MEMO = os.path.join(common.HOME, ".cache", "clisweave", "zcode-no-tui.json")
+ZCODE_TUI_MEMO = os.path.join(common.HOME, ".cache", "crossweave", "zcode-no-tui.json")
 
 # How the CLI reports the missing package: a dynamic import of a bare
 # specifier that resolves to nothing. Both spellings are matched -- the ESM

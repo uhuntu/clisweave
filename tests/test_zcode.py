@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from clisweave import cli, codebuddy, common, search, sessions, step, zcode
+from crossweave import cli, codebuddy, common, search, sessions, step, zcode
 
 SID = "sess_90bdabce-9550-4a6f-b46f-440ec7627594"
 SID2 = "sess_49792350-31fc-4299-909f-f760ca2bcfe9"

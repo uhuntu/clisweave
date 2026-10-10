@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-from clisweave import cli, codebuddy, common, search, sessions, step, zcode
+from crossweave import cli, codebuddy, common, search, sessions, step, zcode
 
 SID = "01a0f6ee-6ad1-7f29-83cd-8524990d2131"
 SID2 = "01a0c1e7-8f47-7a41-9734-48c0c8f91fe0"

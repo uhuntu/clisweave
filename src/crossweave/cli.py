@@ -39,8 +39,8 @@ is passed through unchanged to the underlying CLI.
 
 The listing (`cw`, `cw sessions`) marks the rows belonging to the current
 directory and shows each session's turn count. Color is used only when the
-output is a terminal: NO_COLOR, TERM=dumb and CLISWEAVE_COLOR=never disable
-it, CLISWEAVE_COLOR=always forces it.
+output is a terminal: NO_COLOR, TERM=dumb and CROSSWEAVE_COLOR=never disable
+it, CROSSWEAVE_COLOR=always forces it.
 
 Per-tool --yolo mapping:
   claude    -> --dangerously-skip-permissions
@@ -66,7 +66,7 @@ Examples:
   cw resume 3         # resume row 3 from the last `cw`/`cw sessions` listing
   cw resume 2 --cwd /path/to/other-project   # can't relocate row 2 in place -- hands off to a fresh session there
   cw 3 codex          # continue row 3 in a new Codex session with context
-  cw update           # update clisweave itself
+  cw update           # update crossweave itself
   cw update tools     # update claude, codex, kimi, and step (whichever are
                       #   installed; zcode updates itself)
   cw update all       # both of the above
@@ -247,7 +247,7 @@ def main():
         print(USAGE)
         return
     if argv and argv[0] in ("-v", "--version"):
-        print(f"clisweave {__version__}")
+        print(f"crossweave {__version__}")
         return
 
     if not argv:

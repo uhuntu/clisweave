@@ -66,7 +66,7 @@ DESKTOP_DB = os.path.join(APP_SUPPORT, "CodeBuddy", "codebuddy-sessions.vscdb")
 
 # Its own cache: `cw` and `cb` number different rows, and a listing from one
 # must never become the other's `resume <N>`.
-LIST_CACHE_FILE = os.path.join(HOME, ".cache", "clisweave", "cb_last_list.json")
+LIST_CACHE_FILE = os.path.join(HOME, ".cache", "crossweave", "cb_last_list.json")
 
 VSCODE_HISTORY_CMD = "tencentcloud.codingcopilot.chatHistory"
 

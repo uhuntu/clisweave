@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from clisweave import codebuddy, codex, common, sessions, step, zcode
+from crossweave import codebuddy, codex, common, sessions, step, zcode
 
 SID = "01a0e0e1-2965-79d4-aba9-3dd3bfc0f7cd"
 
@@ -349,7 +349,7 @@ def test_literal_matches_finds_a_term_only_in_a_tool_result(tmp_path):
 
 
 def test_search_uses_a_step_snippet(monkeypatch, tmp_path):
-    from clisweave import search
+    from crossweave import search
     step_store(tmp_path, "--C--Users-huntl--", [
         ("f_%s.jsonl" % SID, [header(), user("the nfc frequency lock issue")])])
     rec = sessions.step_light_records()[0]
@@ -550,7 +550,7 @@ def test_search_gathers_step_candidates(monkeypatch, tmp_path):
     """A listing is not the only consumer of the light records: `ai search`
     builds its candidate list from the same three-way gather, and a tool that
     is only wired into the listing is silently unsearchable."""
-    from clisweave import search
+    from crossweave import search
     for attr in ("CLAUDE_PROJECTS", "CODEX_HOME", "KIMI_HOME"):
         monkeypatch.setattr(common, attr, str(tmp_path / ("no-" + attr.lower())))
     step_store(tmp_path, "--C--Users-huntl--", [
@@ -561,7 +561,7 @@ def test_search_gathers_step_candidates(monkeypatch, tmp_path):
 
 
 def test_search_excludes_step_subagents_too(monkeypatch, tmp_path):
-    from clisweave import search
+    from crossweave import search
     for attr in ("CLAUDE_PROJECTS", "CODEX_HOME", "KIMI_HOME"):
         monkeypatch.setattr(common, attr, str(tmp_path / ("no-" + attr.lower())))
     step_store(tmp_path, "--C--Users-huntl--", [

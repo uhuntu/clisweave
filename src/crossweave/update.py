@@ -1,4 +1,4 @@
-"""cw update - update clisweave itself, and optionally the underlying
+"""cw update - update crossweave itself, and optionally the underlying
 claude/codex/kimi/step CLIs, which each ship their own self-update command.
 zcode and codebuddy are absent from TOOL_UPDATE_CMD on purpose -- zcode is
 a desktop app that updates itself, and codebuddy is an npm package the user
@@ -28,7 +28,7 @@ TOOL_UPDATE_CMD = {
 # pass -- codex's ~146MB asset dies mid-download every time, resume ignored,
 # and its GitHub Releases fallback dies the same way. The same transfer through
 # a working local proxy completed in under a minute.
-UPDATE_PROXY_ENV = "CLISWEAVE_UPDATE_PROXY"
+UPDATE_PROXY_ENV = "CROSSWEAVE_UPDATE_PROXY"
 
 # claude's updater has no fallback mirror, so it's prone to hitting its own
 # internal download deadline on a slow-but-working connection -- confirmed
@@ -118,7 +118,7 @@ TOOL_UPDATE_RECOVERY_MARKERS = {
 
 
 def detect_repo_dir(package_dir):
-    """If clisweave was installed by symlinking into a git clone (the curl or
+    """If crossweave was installed by symlinking into a git clone (the curl or
     git install path), return that clone's root so it can be `git pull`ed.
     Returns None for a pip install, where the package lives under
     site-packages with no .git anywhere nearby.
@@ -216,7 +216,7 @@ def run_with_retries(argv, retries, proxy, failure_markers=(), give_up_markers=(
 
 
 def update_self():
-    """Update the clisweave install itself. Returns a process-style exit code."""
+    """Update the crossweave install itself. Returns a process-style exit code."""
     package_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = detect_repo_dir(package_dir)
     proxy = os.environ.get(UPDATE_PROXY_ENV)
@@ -226,8 +226,8 @@ def update_self():
         argv = ["git", "-C", repo_dir, "pull", "--ff-only"]
         give_up_markers = GIT_FATAL_MARKERS
     else:
-        print("Updating pip install of clisweave ...", flush=True)
-        argv = [sys.executable, "-m", "pip", "install", "--upgrade", "clisweave"]
+        print("Updating pip install of crossweave ...", flush=True)
+        argv = [sys.executable, "-m", "pip", "install", "--upgrade", "crossweave"]
         give_up_markers = ()
 
     code, gave_up = run_with_retries(argv, SELF_UPDATE_RETRIES, proxy,

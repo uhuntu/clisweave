@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-Installs Clisweave's commands (cw, ai-sessions, plus compatibility aliases) as native
+Installs Crossweave's commands (cw, cb, plus compatibility aliases) as native
 .cmd launchers on PATH -- no Git Bash/WSL/Cygwin required.
 
 Run after cloning:
   .\install.ps1
 
 Or as a one-liner, which clones the repo first:
-  irm https://raw.githubusercontent.com/uhuntu/clisweave/master/install.ps1 | iex
+  irm https://raw.githubusercontent.com/uhuntu/crossweave/master/install.ps1 | iex
 #>
 
 $ErrorActionPreference = "Stop"
@@ -16,8 +16,8 @@ $ErrorActionPreference = "Stop"
 # versions, where this preference variable doesn't exist yet.
 $PSNativeCommandUseErrorActionPreference = $false
 
-$RepoUrl = "https://github.com/uhuntu/clisweave.git"
-$BinDir = if ($env:CLISWEAVE_BIN_DIR) { $env:CLISWEAVE_BIN_DIR } elseif ($env:AIMUX_BIN_DIR) { $env:AIMUX_BIN_DIR } else { Join-Path $HOME ".local\bin" }
+$RepoUrl = "https://github.com/uhuntu/crossweave.git"
+$BinDir = if ($env:CROSSWEAVE_BIN_DIR) { $env:CROSSWEAVE_BIN_DIR } elseif ($env:CLISWEAVE_BIN_DIR) { $env:CLISWEAVE_BIN_DIR } elseif ($env:AIMUX_BIN_DIR) { $env:AIMUX_BIN_DIR } else { Join-Path $HOME ".local\bin" }
 
 # When run via `irm | iex` there's no script file on disk, so $PSCommandPath
 # is empty -- guard the lookup instead of assuming a local clone, same idea
@@ -26,10 +26,10 @@ if ($PSCommandPath -and (Test-Path (Join-Path (Split-Path $PSCommandPath -Parent
     $ScriptDir = Split-Path $PSCommandPath -Parent
 } else {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Error "clisweave: git is required to fetch the repo. Install Git for Windows and re-run."
+        Write-Error "crossweave: git is required to fetch the repo. Install Git for Windows and re-run."
         exit 1
     }
-    $RepoDir = if ($env:CLISWEAVE_REPO_DIR) { $env:CLISWEAVE_REPO_DIR } elseif ($env:AIMUX_REPO_DIR) { $env:AIMUX_REPO_DIR } else { Join-Path $HOME ".local\share\clisweave" }
+    $RepoDir = if ($env:CROSSWEAVE_REPO_DIR) { $env:CROSSWEAVE_REPO_DIR } elseif ($env:CLISWEAVE_REPO_DIR) { $env:CLISWEAVE_REPO_DIR } elseif ($env:AIMUX_REPO_DIR) { $env:AIMUX_REPO_DIR } else { Join-Path $HOME ".local\share\crossweave" }
     if (Test-Path (Join-Path $RepoDir ".git")) {
         git -C $RepoDir pull --ff-only
     } else {
@@ -63,12 +63,12 @@ function Get-WorkingPython {
 
 $Python = Get-WorkingPython
 if (-not $Python) {
-    Write-Error "clisweave: no working Python 3 interpreter found (tried python, python3, py -3). Install Python from https://python.org and re-run."
+    Write-Error "crossweave: no working Python 3 interpreter found (tried python, python3, py -3). Install Python from https://python.org and re-run."
     exit 1
 }
 $PyArgsStr = ($Python.Args -join " ")
 
-# cw/ai-sessions are plain Python scripts with a `#!/usr/bin/env python3`
+# cw/cb are plain Python scripts with a `#!/usr/bin/env python3`
 # shebang, which only Git Bash/WSL/msys know how to run. A .cmd launcher
 # runs natively from both cmd.exe and PowerShell (PATHEXT covers .cmd), and
 # always invokes the *current* file at $Target -- nothing is copied, so a
@@ -85,7 +85,6 @@ function Write-Launcher($Name, $Target) {
     Write-Host "linked $cmdPath -> $Target"
 }
 
-Write-Launcher "ai-sessions" (Join-Path $ScriptDir "bin\ai-sessions")
 $CwPath = Join-Path $BinDir "cw.cmd"
 if (Test-Path $CwPath) {
     Write-Warning "$CwPath already exists; leaving it unchanged"
@@ -98,6 +97,11 @@ if (Test-Path $CbPath) {
 } else {
     Write-Launcher "cb" (Join-Path $ScriptDir "bin\cb")
 }
+# crossweave is the self-named command; clisweave/aim/aimux are compatibility
+# aliases from the earlier names. ai-sessions is deliberately NOT installed
+# anymore: an active PyPI package of the same name owns that word, and
+# `cw sessions` / `cw resume` is the same surface.
+Write-Launcher "crossweave" (Join-Path $ScriptDir "bin\cw")
 Write-Launcher "clisweave" (Join-Path $ScriptDir "bin\cw")
 Write-Launcher "aim" (Join-Path $ScriptDir "bin\cw")
 Write-Launcher "aimux" (Join-Path $ScriptDir "bin\cw")

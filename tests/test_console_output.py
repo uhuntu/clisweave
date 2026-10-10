@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from clisweave import cli, sessions
+from crossweave import cli, sessions
 
 
 def _gbk_stdout():

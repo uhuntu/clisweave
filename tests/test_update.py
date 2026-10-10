@@ -1,12 +1,12 @@
 import pytest
 
-from clisweave import update
+from crossweave import update
 
 
 def test_detect_repo_dir_finds_git_root(tmp_path):
-    repo = tmp_path / "clisweave"
+    repo = tmp_path / "crossweave"
     (repo / ".git").mkdir(parents=True)
-    package_dir = repo / "src" / "clisweave"
+    package_dir = repo / "src" / "crossweave"
     package_dir.mkdir(parents=True)
 
     assert update.detect_repo_dir(str(package_dir)) == str(repo)
@@ -14,7 +14,7 @@ def test_detect_repo_dir_finds_git_root(tmp_path):
 
 def test_detect_repo_dir_none_for_pip_install(tmp_path):
     # No .git two levels up -- looks like a site-packages install.
-    package_dir = tmp_path / "site-packages" / "clisweave"
+    package_dir = tmp_path / "site-packages" / "crossweave"
     package_dir.mkdir(parents=True)
 
     assert update.detect_repo_dir(str(package_dir)) is None
@@ -61,7 +61,7 @@ def test_cmd_update_pip_install_runs_pip_upgrade(monkeypatch, capsys):
         update.cmd_update([])
 
     assert exc_info.value.code == 0
-    assert calls == [["/fake/python", "-m", "pip", "install", "--upgrade", "clisweave"]]
+    assert calls == [["/fake/python", "-m", "pip", "install", "--upgrade", "crossweave"]]
     assert "Updating pip install" in capsys.readouterr().out
 
 
@@ -317,7 +317,7 @@ def test_update_tools_retries_kimi(monkeypatch):
 
 
 def test_update_tools_first_attempt_is_direct_retry_goes_via_proxy(monkeypatch):
-    """With CLISWEAVE_UPDATE_PROXY set, a failed codex update retries through
+    """With CROSSWEAVE_UPDATE_PROXY set, a failed codex update retries through
     the proxy (and succeeds): this network severs codex's ~146MB direct
     transfer at ~60MB every time, while the proxy path completes in a minute."""
     monkeypatch.setattr(update.shutil, "which", lambda tool: f"/usr/bin/{tool}")

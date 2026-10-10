@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "clisweave"
-version = "0.2.0"
+name = "crossweave"
+version = "0.3.0"
 description = "Unified CLI wrapper + cross-tool session manager for Claude Code, Codex CLI, Kimi CLI, step, ZCode, and CodeBuddy"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -22,17 +22,24 @@ classifiers = [
 test = ["pytest"]
 
 [project.urls]
-Homepage = "https://github.com/uhuntu/clisweave"
-Repository = "https://github.com/uhuntu/clisweave"
+Homepage = "https://github.com/uhuntu/crossweave"
+Repository = "https://github.com/uhuntu/crossweave"
 
 [project.scripts]
-ai = "clisweave.cli:main"
-cw = "clisweave.cli:main"
-aim = "clisweave.cli:main"
-clisweave = "clisweave.cli:main"
-aimux = "clisweave.cli:main"
-ai-sessions = "clisweave.sessions:main"
-cb = "clisweave.cb:main"
+# cw is the command people type; crossweave is the self-named one; ai/aim/
+# aimux/clisweave are kept so scripts and links from the old names keep
+# working (aim/aimux from the aimux era, clisweave from the clisweave one).
+# ai-sessions is no longer advertised -- it collides with an active PyPI
+# package of the same name -- but the entry point stays so existing pip
+# installs don't lose a command.
+cw = "crossweave.cli:main"
+crossweave = "crossweave.cli:main"
+ai = "crossweave.cli:main"
+aim = "crossweave.cli:main"
+aimux = "crossweave.cli:main"
+clisweave = "crossweave.cli:main"
+ai-sessions = "crossweave.sessions:main"
+cb = "crossweave.cb:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

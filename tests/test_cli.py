@@ -3,8 +3,8 @@ import re
 
 import pytest
 
-from clisweave import cli, search
-from clisweave.cli import UsageError, build_command
+from crossweave import cli, search
+from crossweave.cli import UsageError, build_command
 
 
 def test_claude_all_flags():

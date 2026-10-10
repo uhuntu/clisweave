@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from clisweave import cb
+from crossweave import cb
 
 CLI_SID = "01a0f6ee-6ad1-7f29-83cd-8524990d2131"
 CID = "759c8f973e1044bba0bca7025a9af7da"
@@ -660,5 +660,5 @@ def test_default_command_is_the_listing_even_with_only_options(tmp_path, capsys)
 
 
 def test_cb_does_not_touch_ais_list_cache(tmp_path):
-    from clisweave import sessions
+    from crossweave import sessions
     assert cb.LIST_CACHE_FILE != sessions.LIST_CACHE_FILE

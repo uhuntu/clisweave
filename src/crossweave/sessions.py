@@ -139,8 +139,8 @@ from .zcode import (
 
 # Remembers the last `cw sessions` listing so `cw resume <N>` can refer to a
 # row by its printed number instead of needing the full/prefix session id.
-LIST_CACHE_FILE = os.path.join(HOME, ".cache", "clisweave", "last_list.json")
-HANDOFF_DIR = os.path.join(HOME, ".cache", "clisweave", "handoffs")
+LIST_CACHE_FILE = os.path.join(HOME, ".cache", "crossweave", "last_list.json")
+HANDOFF_DIR = os.path.join(HOME, ".cache", "crossweave", "handoffs")
 
 
 def write_list_cache(entries):
@@ -461,7 +461,7 @@ def session_handoff_details(tool, sid):
         cwd = record.get("cwd")
         messages = kimi_handoff_messages(record["dir"])
 
-    sections = [f"# Clisweave handoff from {tool}\n", f"Source session: `{sid}`\n"]
+    sections = [f"# Crossweave handoff from {tool}\n", f"Source session: `{sid}`\n"]
     for role, text in messages:
         sections.append(f"## {role.title()}\n\n{text.strip()}\n")
     if not messages:
@@ -877,7 +877,7 @@ HANDOFF_MAX_DEPTH = 5
 
 # An export is only read by the session it just seeded, so it has no life
 # beyond that -- but nothing deleted them, and a transcript is as long as the
-# conversation was, so `~/.cache/clisweave/handoffs` grew without bound (one
+# conversation was, so `~/.cache/crossweave/handoffs` grew without bound (one
 # file per cross-tool or --cwd handoff, forever). Keep the tail of recent
 # ones: enough to re-seed a session that was handed off moments ago, and
 # little enough to bound the disk.

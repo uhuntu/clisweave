@@ -91,7 +91,7 @@ JUDGE_CMD = {
 # per-machine setting: it must name a judge that is actually installed here,
 # because the fallback sequence below is only entered *after* this one has
 # already failed. claude, codex, and kimi are installed on this box as well
-# (verified on PATH), so the fallback chain behind step is real; clisweave
+# (verified on PATH), so the fallback chain behind step is real; crossweave
 # also runs under step (the StepCode CLI), which leads.
 DEFAULT_JUDGE = "step"
 

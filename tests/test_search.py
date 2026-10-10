@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from clisweave import common, search, sessions
+from crossweave import common, search, sessions
 
 
 def test_judge_calls_dont_persist_a_visible_session():

@@ -13,7 +13,7 @@ import os
 import time
 
 import pytest
-from clisweave import sessions, update
+from crossweave import sessions, update
 
 
 # ---------- ai update ----------
@@ -24,9 +24,9 @@ def test_detect_repo_dir_accepts_a_dot_git_file(tmp_path):
     down the pip branch -- quietly updating (or downgrading) the PyPI
     release instead of the clone the `ai` launcher actually points at."""
     # an editable/curl install: the package sits in the clone's src/
-    pkg = tmp_path / "clone" / "src" / "clisweave"
+    pkg = tmp_path / "clone" / "src" / "crossweave"
     pkg.mkdir(parents=True)
-    (tmp_path / "clone" / ".git").write_text("gitdir: /elsewhere/clisweave/.git/worktrees/wt\n")
+    (tmp_path / "clone" / ".git").write_text("gitdir: /elsewhere/crossweave/.git/worktrees/wt\n")
 
     assert update.detect_repo_dir(str(pkg)) == str(tmp_path / "clone")
 

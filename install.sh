@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Symlinks Clisweave's commands (cw, ai-sessions, plus optional aliases)
+# Symlinks Crossweave's commands (cw, cb, plus compatibility aliases)
 # into a directory on your PATH.
 #
 # Run after cloning:
 #   ./install.sh
 #
 # Or as a one-liner, which clones the repo first:
-#   curl -fsSL https://raw.githubusercontent.com/uhuntu/clisweave/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/uhuntu/crossweave/master/install.sh | bash
 set -euo pipefail
 
 # On Git-for-Windows/MSYS, `ln -sf` defaults to copying instead of creating a
@@ -16,8 +16,8 @@ set -euo pipefail
 # elsewhere.
 export MSYS="${MSYS:-}${MSYS:+ }winsymlinks:nativestrict"
 
-REPO_URL="https://github.com/uhuntu/clisweave.git"
-BIN_DIR="${CLISWEAVE_BIN_DIR:-${AIMUX_BIN_DIR:-$HOME/.local/bin}}"
+REPO_URL="https://github.com/uhuntu/crossweave.git"
+BIN_DIR="${CROSSWEAVE_BIN_DIR:-${CLISWEAVE_BIN_DIR:-${AIMUX_BIN_DIR:-$HOME/.local/bin}}}"
 
 # When piped via `curl | bash`, there's no script file, so BASH_SOURCE[0] is
 # unset (not just non-matching) -- guard the lookup instead of dereferencing
@@ -27,7 +27,7 @@ if [[ -n "$SOURCE_PATH" && -f "$(dirname "$SOURCE_PATH")/bin/cw" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$SOURCE_PATH")" && pwd)"
 else
   # Not running from inside a clone -- fetch one first, then re-run from there.
-  REPO_DIR="${CLISWEAVE_REPO_DIR:-${AIMUX_REPO_DIR:-$HOME/.local/share/clisweave}}"
+  REPO_DIR="${CROSSWEAVE_REPO_DIR:-${CLISWEAVE_REPO_DIR:-${AIMUX_REPO_DIR:-$HOME/.local/share/crossweave}}}"
   if [[ -d "$REPO_DIR/.git" ]]; then
     git -C "$REPO_DIR" pull --ff-only
   else
@@ -39,7 +39,7 @@ fi
 mkdir -p "$BIN_DIR"
 
 # On Windows, `ln -sf` needs symlink privilege (Developer Mode) or it silently
-# falls back to *copying* the file -- which breaks cw/ai-sessions, since they
+# falls back to *copying* the file -- which breaks the shims, since they
 # locate their package by resolving their own realpath. And the `python3`
 # name on PATH is sometimes a no-op Microsoft Store stub even when a real
 # interpreter is installed as `python`. Detect both and fall back to a tiny
@@ -94,8 +94,6 @@ link_or_launcher() {
   echo "linked $dst -> $src (launcher)"
 }
 
-link_or_launcher "$SCRIPT_DIR/bin/ai-sessions" "$BIN_DIR/ai-sessions"
-
 # `cw` is short enough that something else may already own it -- leave it be
 if [[ -e "$BIN_DIR/cw" || -L "$BIN_DIR/cw" ]]; then
   echo "Warning: $BIN_DIR/cw already exists; leaving it unchanged" >&2
@@ -110,7 +108,11 @@ else
   link_or_launcher "$SCRIPT_DIR/bin/cb" "$BIN_DIR/cb"
 fi
 
-for alias_name in clisweave aim aimux; do
+# crossweave is the self-named command; clisweave/aim/aimux are compatibility
+# aliases from the earlier names. ai-sessions is deliberately NOT linked
+# anymore: an active PyPI package of the same name owns that word, and
+# `cw sessions` / `cw resume` is the same surface.
+for alias_name in crossweave clisweave aim aimux; do
   link_or_launcher "$SCRIPT_DIR/bin/cw" "$BIN_DIR/$alias_name"
 done
 

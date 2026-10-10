@@ -1,4 +1,4 @@
-// clisweave · Step Plan (Kilo Code) 接入配置模板
+// crossweave · Step Plan (Kilo Code) 接入配置模板
 // 用法：复制到项目根的 kilo.json（或 kilo.jsonc），已有同名文件则按需合并。
 // 文档：https://platform.stepfun.com/docs/zh/step-plan/integrations/kilo-code
 //

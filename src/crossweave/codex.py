@@ -349,7 +349,7 @@ def codex_rollout_title(sid):
     shell transcript the same way claude_title_and_cwd does, in favor of the
     next real message, falling back to the first one if nothing better
     turns up. A session made up entirely of injected or seeded text has no
-    genuine message at all; the ones a tool started for itself (clisweave's
+    genuine message at all; the ones a tool started for itself (crossweave's
     seeds, codex's approval review) are still named, so they don't all
     collapse into `(no title)`.
     """

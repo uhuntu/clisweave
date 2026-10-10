@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from clisweave import codex, color, common, sessions
+from crossweave import codex, color, common, sessions
 
 
 # ---------- capturing what render_rows prints ----------
@@ -317,12 +317,12 @@ class FakeStream:
     ({}, False, False),                       # a pipe: never
     ({"NO_COLOR": "1"}, True, False),         # the environment said no
     ({"TERM": "dumb"}, True, False),          # ...and so did the terminal
-    ({"CLISWEAVE_COLOR": "never"}, True, False),
-    ({"CLISWEAVE_COLOR": "always"}, False, True),   # asked for, so a pipe gets it too
-    ({"CLISWEAVE_COLOR": "never"}, False, False),
+    ({"CROSSWEAVE_COLOR": "never"}, True, False),
+    ({"CROSSWEAVE_COLOR": "always"}, False, True),   # asked for, so a pipe gets it too
+    ({"CROSSWEAVE_COLOR": "never"}, False, False),
 ])
 def test_color_is_only_emitted_when_the_terminal_asks_for_it(monkeypatch, env, isatty, expected):
-    for name in ("NO_COLOR", "TERM", "CLISWEAVE_COLOR"):
+    for name in ("NO_COLOR", "TERM", "CROSSWEAVE_COLOR"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -333,7 +333,7 @@ def test_color_is_only_emitted_when_the_terminal_asks_for_it(monkeypatch, env, i
 def test_a_real_terminal_is_probed_for_vt_support(monkeypatch):
     """A TTY with a clean environment reaches the Windows probe -- whose
     answer is the platform's, so only the call is pinned here."""
-    for name in ("NO_COLOR", "TERM", "CLISWEAVE_COLOR"):
+    for name in ("NO_COLOR", "TERM", "CROSSWEAVE_COLOR"):
         monkeypatch.delenv(name, raising=False)
     assert isinstance(color._decide(FakeStream(True)), bool)
 
