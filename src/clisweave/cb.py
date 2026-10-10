@@ -15,8 +15,12 @@ Only the CLI keeps a transcript. The other two keep metadata, so their rows
 can be listed but not resumed or handed off -- `cb resume` says so rather
 than starting a fresh, empty session under a resume's name.
 
-`cb` is deliberately separate from `cw`: `cw` weaves tools whose sessions can
-all be resumed and handed to one another; these three cannot.
+The CLI client also appears in `cw` as the `codebuddy` tool (see
+codebuddy.py), where it is a full citizen: `cw` resumes it and hands its
+context to the other tools. `cb` keeps listing it so the three clients'
+sessions can still be viewed -- and clustered with `--cluster` -- as one
+table; the row numbers here are this command's own cache and never collide
+with a `cw` listing.
 """
 import argparse
 import base64

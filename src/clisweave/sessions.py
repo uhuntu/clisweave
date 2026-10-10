@@ -1,9 +1,9 @@
-"""Session listing/resuming across the claude, codex, kimi, step, and zcode
-stores.
+"""Session listing/resuming across the claude, codex, kimi, step, zcode,
+and codebuddy stores.
 Invoked via `cw sessions` / `cw resume`, or standalone as `ai-sessions`.
 
-The per-tool store readers live in claude.py, codex.py, kimi.py, step.py and
-zcode.py,
+The per-tool store readers live in claude.py, codex.py, kimi.py, step.py,
+zcode.py and codebuddy.py,
 on top of the shared primitives in common.py. This module keeps the listing,
 the literal search scan, the handoff engine and the resume flow, and
 re-imports the per-tool names: cli.py, search.py and the tests reach them as
@@ -108,6 +108,15 @@ from .step import (
     step_title,
     step_title_with_name,
 )
+from .codebuddy import (
+    codebuddy_handoff_messages,
+    codebuddy_light_records,
+    codebuddy_record_texts,
+    codebuddy_resolve,
+    codebuddy_session_cwd,
+    codebuddy_snippet,
+    codebuddy_tool_results,
+)
 from .zcode import (
     zcode_contains,
     zcode_handoff_messages,
@@ -192,6 +201,14 @@ def session_literal_scan_files(record):
     which stays OUT of wire.jsonl -- a real session mentioned the searched
     term only there and was unfindable)."""
     tool = record["tool"]
+    if tool == "codebuddy":
+        # The transcript plus the tool-results sidecars: a big output lands
+        # in <slug>/<sid>/tool-results/<callId>.txt, outside the jsonl --
+        # the same shape of problem that gave kimi its output.log scan. The
+        # sidecars are plain text, so _file_contains's tool=None path
+        # reads them as-is.
+        files = [record["path"]] if record.get("path") else []
+        return files + codebuddy_tool_results(record)
     if tool in ("claude", "step"):
         return [record["path"]]
     if tool == "codex":
@@ -252,6 +269,10 @@ def _literal_texts(tool, entry):
             elif btype == "toolCall":
                 texts.append(_step_tool_call_text(block))
         return texts
+    if tool == "codebuddy":
+        # One function covers every record kind the scan wants, because the
+        # snippet reader shares it: messages, calls, and call results.
+        return codebuddy_record_texts(entry, with_tool_output=True)
     if tool == "kimi":
         if kind == "turn.prompt":
             return _all_text_blocks(list_field(entry, "input"))
@@ -421,6 +442,12 @@ def session_handoff_details(tool, sid):
             return None
         cwd = record.get("cwd")
         messages = zcode_handoff_messages(sid)
+    elif tool == "codebuddy":
+        record = next((r for r in codebuddy_light_records(show_all=True) if r["id"] == sid), None)
+        if not record:
+            return None
+        cwd = record.get("cwd")
+        messages = codebuddy_handoff_messages(record["path"])
     else:
         record = next((r for r in kimi_light_records(show_all=True) if r["id"] == sid), None)
         if not record:
@@ -685,6 +712,8 @@ def cmd_list(args):
         light += step_light_records(show_all)
     if tool_filter in (None, "zcode"):
         light += zcode_light_records(show_all)
+    if tool_filter in (None, "codebuddy"):
+        light += codebuddy_light_records(show_all)
 
     light.sort(key=lambda r: r["ts"], reverse=True)
 
@@ -743,6 +772,8 @@ def cmd_stats(args):
         light += step_light_records(True)
     if tool_filter in (None, "zcode"):
         light += zcode_light_records(True)
+    if tool_filter in (None, "codebuddy"):
+        light += codebuddy_light_records(True)
 
     total = len(light)
     if total == 0:
@@ -876,6 +907,18 @@ def _handoff_seed_texts(tool, d):
         if message.get("role") not in ("user", "assistant"):
             return []
         return _all_text_blocks(list_field(message, "content"))
+    if tool == "codebuddy":
+        # codex-rs shapes again: a message is type:"message" with a
+        # top-level role -- a spelling no other tool's seed reader matches,
+        # and one that has to match here: codebuddy takes a bare positional
+        # prompt, so it is a real handoff target, and a session whose seed
+        # went unrecognized would keep the generated label and dead-end the
+        # handoff chain at that hop (step's own lesson, test_step.py).
+        if d.get("type") != "message":
+            return []
+        if d.get("role") not in ("user", "assistant"):
+            return []
+        return _all_text_blocks(list_field(d, "content"), ("input_text", "output_text"))
     if tool == "zcode":
         # zcode is never a handoff target -- perform_handoff refuses it, no
         # CLI there seeds a session -- so no zcode session can open with a
@@ -974,6 +1017,10 @@ def _resolve_title_and_cwd(r, depth=0):
     elif tool == "zcode":
         # The title is a stored one -- ZCode's auto-titler keeps it current,
         # and the light record normalized it on the way in.
+        title = r.get("title") or "(no title)"
+        cwd_show = r.get("cwd") or "?"
+    elif tool == "codebuddy":
+        # Same: the titler wrote into the file, and the light record read it
         title = r.get("title") or "(no title)"
         cwd_show = r.get("cwd") or "?"
     else:
@@ -1154,6 +1201,11 @@ def session_turns(record):
     reads as None rather than 0: a store that writes its JSON with spaces
     after the colons would otherwise show every session as turn-free."""
     tool = record.get("tool")
+    if tool == "codebuddy":
+        # The single-pass reader already counted the genuine prompts -- the
+        # slash-command echoes it skips are the reason this tool has no
+        # byte-marker here.
+        return record.get("turns") or None
     if tool == "zcode":
         # Nothing to byte-count -- the store answers directly, and honestly:
         # an uncountable session shows the same "?" a file-backed one does.
@@ -1227,6 +1279,15 @@ def _last_text_from_record(tool, d):
             return None
         return extract_text_from_content(payload.get("content"),
                                          ("output_text", "input_text", "text"))
+    if tool == "codebuddy":
+        # codex-rs record shapes: a call and its result are their own
+        # records, and a message's blocks are typed input_text/output_text.
+        if d.get("type") != "message":
+            return None
+        if d.get("role") not in ("user", "assistant"):
+            return None
+        return extract_text_from_content(d.get("content"),
+                                         ("input_text", "output_text"))
     # kimi: the user's turn.prompt, or the assistant's content.part
     if d.get("type") == "turn.prompt":
         for block in list_field(d, "input"):
@@ -1485,6 +1546,9 @@ def cmd_resume(args):
             exec_or_die(["codex", "resume"])
         elif tool == "kimi":
             exec_or_die(["kimi", "-S"])
+        elif tool == "codebuddy":
+            # a real interactive picker, like claude's
+            exec_or_die(["codebuddy", "-r"])
         elif tool == "zcode":
             # The app is its own session picker; no CLI selector exists.
             print("cw resume: zcode is a desktop app -- pick the session in its task list, "
@@ -1497,7 +1561,8 @@ def cmd_resume(args):
 
     prefix, extra = rest[0], rest[1:]
     resolver = {"claude": claude_resolve, "codex": codex_resolve, "kimi": kimi_resolve,
-                "step": step_resolve, "zcode": zcode_resolve}[tool]
+                "step": step_resolve, "zcode": zcode_resolve,
+                "codebuddy": codebuddy_resolve}[tool]
     matches = resolver(prefix)
 
     if len(matches) == 1:
@@ -1511,7 +1576,8 @@ def cmd_resume(args):
         sys.exit(1)
 
     cwd_getter = {"claude": claude_session_cwd, "codex": codex_cwd, "kimi": kimi_session_cwd,
-                  "step": step_session_cwd, "zcode": zcode_session_cwd}[tool]
+                  "step": step_session_cwd, "zcode": zcode_session_cwd,
+                  "codebuddy": codebuddy_session_cwd}[tool]
 
     if forced_cwd:
         if not os.path.isdir(forced_cwd):
@@ -1556,6 +1622,8 @@ def cmd_resume(args):
     elif tool == "step":
         # step takes a path or a partial id, and resumes that session directly
         exec_or_die(["step", "--resume", full_id, *extra])
+    elif tool == "codebuddy":
+        exec_or_die(["codebuddy", "-r", full_id, *extra])
     elif tool == "zcode":
         # No CLI reopens one session and no deep link names one either --
         # the workspace link is the closest route in (cb's desktop handler

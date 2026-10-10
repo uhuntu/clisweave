@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from clisweave import cli, common, search, sessions, step, zcode
+from clisweave import cli, codebuddy, common, search, sessions, step, zcode
 
 SID = "sess_90bdabce-9550-4a6f-b46f-440ec7627594"
 SID2 = "sess_49792350-31fc-4299-909f-f760ca2bcfe9"
@@ -35,6 +35,10 @@ MS = 1_791_445_523_543  # epoch ms, the store's unit
 def _isolate_zcode_store(monkeypatch, tmp_path):
     monkeypatch.setattr(zcode, "ZCODE_DB", str(tmp_path / "no-zcode.sqlite"))
     monkeypatch.setattr(zcode, "_json1", None)  # the probe caches per process
+    # the machine's own codebuddy store would leak real sessions into the
+    # listing/search tests here that gather all the tools
+    monkeypatch.setattr(codebuddy, "CODEBUDDY_PROJECTS",
+                        str(tmp_path / "no-codebuddy"))
     yield
 
 

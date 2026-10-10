@@ -1,14 +1,14 @@
-"""cw - unified wrapper for the claude / codex / kimi / step CLIs, plus the
-zcode desktop app's session store. Normalizes a handful of common flags
-across the terminal tools and passes everything else straight through;
-zcode has no terminal interface, so `cw zcode` only opens the app.
+"""cw - unified wrapper for the claude / codex / kimi / step / codebuddy
+CLIs, plus the zcode desktop app's session store. Normalizes a handful of
+common flags across the terminal tools and passes everything else straight
+through; zcode has no terminal interface, so `cw zcode` only opens the app.
 """
 import os
 import sys
 
 from . import __version__, search, sessions, update
 
-TOOLS = ("claude", "codex", "kimi", "step", "zcode")
+TOOLS = ("claude", "codex", "kimi", "step", "zcode", "codebuddy")
 
 # USAGE is an f-string built from TOOLS, search.JUDGE_CMD and
 # search.DEFAULT_JUDGE for the same reason SUBCOMMANDS exists below: the
@@ -43,17 +43,19 @@ output is a terminal: NO_COLOR, TERM=dumb and CLISWEAVE_COLOR=never disable
 it, CLISWEAVE_COLOR=always forces it.
 
 Per-tool --yolo mapping:
-  claude  -> --dangerously-skip-permissions
-  codex   -> --approve-for-me   (auto-approve, still sandboxed)
-  kimi    -> -y/--yolo
-  step    -> --approval-mode auto + --non-interactive-approval allow
-  zcode   -> (desktop app; no flags apply)
+  claude    -> --dangerously-skip-permissions
+  codex     -> --approve-for-me   (auto-approve, still sandboxed)
+  kimi      -> -y/--yolo
+  step      -> --approval-mode auto + --non-interactive-approval allow
+  codebuddy -> -y, --dangerously-skip-permissions (HIGH/CRITICAL still ask)
+  zcode     -> (desktop app; no flags apply)
 
 Examples:
   cw claude -p "summarize this repo"
   cw codex -p -m o3 "fix the failing test"
   cw kimi -c
   cw step -p "summarize this repo"
+  cw codebuddy -p "summarize this repo"
   cw zcode            # open the ZCode app on this directory (its sessions
                       #   show in `cw sessions` too)
   cw claude -- --agent reviewer "look at this diff"
@@ -176,6 +178,26 @@ def build_command(tool, rest):
             # back to --non-interactive-approval, which denies by default, so
             # -y has to cover both.
             cmd += ["--approval-mode", "auto", "--non-interactive-approval", "allow"]
+    elif tool == "codebuddy":
+        # codebuddy is a claude-code derivative and maps one-to-one, with
+        # two differences: its --add-dir is ONE variadic flag (commander
+        # consumes every value after it until the next flag, so the dirs go
+        # behind a single occurrence), and -p takes the prompt positionally
+        # like claude's does.
+        cmd = ["codebuddy"]
+        if print_:
+            cmd.append("-p")
+        if continue_session:
+            cmd.append("-c")
+        if model:
+            cmd += ["--model", model]
+        if add_dirs:
+            cmd.append("--add-dir")
+            cmd += add_dirs
+        if yolo:
+            # -y, --dangerously-skip-permissions: verified against
+            # `codebuddy --help` (2.161.4) -- the same flag claude takes.
+            cmd.append("--dangerously-skip-permissions")
     elif tool == "zcode":
         # A desktop app, not a terminal CLI: there are no flags to translate
         # and no stdin/stdout session to attach to. The one thing `cw zcode`

@@ -28,7 +28,7 @@ CODEX_HOME = os.path.join(HOME, ".codex")
 KIMI_HOME = os.path.join(HOME, ".kimi-code")
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
-TOOLS = ("claude", "codex", "kimi", "step", "zcode")
+TOOLS = ("claude", "codex", "kimi", "step", "zcode", "codebuddy")
 
 
 

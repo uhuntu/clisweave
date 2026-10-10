@@ -176,6 +176,8 @@ def gather_candidates(tool_filter, show_all=False):
         light += sessions.step_light_records(show_all=show_all)
     if tool_filter in (None, "zcode"):
         light += sessions.zcode_light_records(show_all=show_all)
+    if tool_filter in (None, "codebuddy"):
+        light += sessions.codebuddy_light_records(show_all=show_all)
     light.sort(key=lambda r: r["ts"], reverse=True)
     return light
 
@@ -192,6 +194,8 @@ def snippet_for(r):
         return sessions.step_snippet(r["path"])
     if tool == "zcode":
         return sessions.zcode_snippet(r["id"])
+    if tool == "codebuddy":
+        return sessions.codebuddy_snippet(r["path"])
     return sessions.kimi_snippet(r["dir"])
 
 
