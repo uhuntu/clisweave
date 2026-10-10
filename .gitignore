@@ -3,3 +3,8 @@ __pycache__/
 build/
 dist/
 *.pyc
+
+# The ZCode app's per-project state: session plan files and the index-exclusion
+# file it generates (which mirrors this very .gitignore), not project source.
+.zcode/
+.zcodeignore
