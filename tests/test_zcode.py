@@ -35,6 +35,12 @@ MS = 1_791_445_523_543  # epoch ms, the store's unit
 def _isolate_zcode_store(monkeypatch, tmp_path):
     monkeypatch.setattr(zcode, "ZCODE_DB", str(tmp_path / "no-zcode.sqlite"))
     monkeypatch.setattr(zcode, "_json1", None)  # the probe caches per process
+    # the no-TUI memo is per-install state on the real machine: tests must
+    # neither read it (a previous run's memory would change the flow) nor
+    # write it, and must not need a zcode on PATH to have an identity at all
+    monkeypatch.setattr(zcode, "ZCODE_TUI_MEMO", str(tmp_path / "no-tui-memo.json"))
+    monkeypatch.setattr(zcode, "zcode_exe_identity",
+                        lambda: {"path": "/fake/zcode", "size": 1, "mtime": 2})
     # the machine's own codebuddy store would leak real sessions into the
     # listing/search tests here that gather all the tools
     monkeypatch.setattr(codebuddy, "CODEBUDDY_PROJECTS",
@@ -394,7 +400,7 @@ def test_a_handoff_into_zcode_seeds_via_the_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     calls = []
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: calls.append(argv) or 0)
+                        lambda argv, **kw: calls.append(argv) or 0)
     monkeypatch.setattr(sessions, "zcode_newest_session_since",
                         lambda started: "sess_fresh01-0000")
 
@@ -415,7 +421,7 @@ def test_a_zcode_handoff_lands_on_a_hint_when_the_tui_is_missing(monkeypatch, tm
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
     responses = iter([0, 1])  # seed ok, TUI gone
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: next(responses))
+                        lambda argv, **kw: next(responses))
     monkeypatch.setattr(sessions, "zcode_newest_session_since",
                         lambda started: "sess_fresh03-0000")
 
@@ -448,7 +454,7 @@ def test_resume_reopens_the_session_through_the_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
     calls = []
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: calls.append(argv) or 0)
+                        lambda argv, **kw: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", SID])
 
@@ -462,7 +468,7 @@ def test_resume_lands_on_a_hint_when_this_install_has_no_tui(monkeypatch, tmp_pa
     headless continuation as the ways forward, not a stranded traceback."""
     one_session(tmp_path)
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
-    monkeypatch.setattr(sessions.subprocess, "call", lambda argv: 1)
+    monkeypatch.setattr(sessions.subprocess, "call", lambda argv, **kw: 1)
 
     with pytest.raises(SystemExit) as exc_info:
         sessions.cmd_resume(["zcode", SID])
@@ -471,6 +477,190 @@ def test_resume_lands_on_a_hint_when_this_install_has_no_tui(monkeypatch, tmp_pa
     err = capsys.readouterr().err
     assert "@zcode/tui" in err
     assert f"zcode --resume {SID} -p" in err
+
+
+def test_resume_runs_a_headless_continuation_when_words_follow_the_id(monkeypatch, tmp_path, capsys):
+    """Words after the id are the next instruction, and the CLI answers them
+    inside the same session without a TUI: `--resume <id> -p <text>` (checked
+    2026-10-10 -- the follow-up turn appended to the same session row, model
+    context intact). This is the route into a stored conversation that works
+    on every install, so it is taken directly."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    calls = []
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv, **kw: calls.append(argv) or 0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.cmd_resume(["zcode", SID, "fix", "the", "nfc", "lock"])
+
+    assert exc_info.value.code == 0  # the CLI's own exit code is cw's
+    assert calls == [["zcode", "--resume", SID, "-p", "fix the nfc lock"]]
+    assert "headlessly" in capsys.readouterr().err
+
+
+def test_resume_keeps_flags_out_of_the_headless_instruction(monkeypatch, tmp_path):
+    """Flags after the id are not an instruction -- they still belong to the
+    TUI invocation, where they went before."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    calls = []
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv, **kw: calls.append(argv) or 0)
+
+    sessions.cmd_resume(["zcode", SID, "--mode", "plan"])
+
+    assert calls == [["zcode", "--resume", SID, "--mode", "plan"]]
+
+
+def test_resume_skips_the_tui_once_the_install_is_known_to_have_none(monkeypatch, tmp_path, capsys):
+    """A remembered no-TUI install is not attempted again -- the landing
+    carries the headless command instead of a second doomed start."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    zcode.zcode_remember_tui_missing()
+    calls = []
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv, **kw: calls.append(argv) or 0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.cmd_resume(["zcode", SID])
+
+    assert exc_info.value.code == 1
+    assert calls == []  # the TUI start that cannot work was not repeated
+    err = capsys.readouterr().err
+    assert "@zcode/tui" in err
+    assert f"zcode --resume {SID} -p" in err
+
+
+def test_resume_remembers_a_tui_death_on_the_missing_package(monkeypatch, tmp_path, capsys):
+    """The one TUI death worth remembering: the child's output names the
+    missing package, so the next resume on this install skips straight to
+    the landing. A death the output cannot explain is left alone."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "_run_zcode_tui", lambda argv: (
+        1, "Error: Cannot find package '@zcode/tui' imported from "
+           "/opt/ZCode/resources/glm/zcode.cjs\n"))
+    assert not os.path.exists(zcode.ZCODE_TUI_MEMO)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.cmd_resume(["zcode", SID])
+
+    assert exc_info.value.code == 1
+    assert zcode.zcode_tui_known_missing()
+    assert f"zcode --resume {SID} -p" in capsys.readouterr().err
+
+
+def test_resume_does_not_remember_a_tui_death_it_cannot_explain(monkeypatch, tmp_path):
+    """A permission error, a corrupt session, a node crash: none of them
+    necessarily repeats, so nothing is remembered and the next resume still
+    tries the TUI."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "_run_zcode_tui", lambda argv: (
+        1, "Error: EACCES: permission denied, open '/dev/tty'\n"))
+
+    with pytest.raises(SystemExit):
+        sessions.cmd_resume(["zcode", SID])
+
+    assert not zcode.zcode_tui_known_missing()
+
+
+def test_a_tui_that_died_on_the_missing_package_is_reported_even_at_zero(monkeypatch, tmp_path, capsys):
+    """The install's CLI writes its TUI error to stderr and returns that
+    write's result -- which is not reliably an exit status. A run whose
+    output says the TUI never opened is a failure whatever the code says."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "_run_zcode_tui", lambda argv: (
+        0, "Error: Cannot find package '@zcode/tui' imported from x\n"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.cmd_resume(["zcode", SID])
+
+    assert exc_info.value.code == 1
+    assert zcode.zcode_tui_known_missing()
+
+
+def test_resume_without_an_id_says_where_the_ids_come_from_without_a_tui(monkeypatch, tmp_path, capsys):
+    """No TUI means no picker to open: the no-id form points at
+    `cw sessions --tool zcode` and the headless continuation instead."""
+    one_session(tmp_path)
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    zcode.zcode_remember_tui_missing()
+    calls = []
+    monkeypatch.setattr(sessions, "exec_or_die", lambda argv: calls.append(argv))
+
+    with pytest.raises(SystemExit):
+        sessions.cmd_resume(["zcode"])
+
+    assert calls == []
+    assert "cw sessions --tool zcode" in capsys.readouterr().err
+
+
+def test_a_zcode_handoff_skips_the_tui_it_knows_is_missing(monkeypatch, tmp_path, capsys):
+    """The seed run is headless and persists the session on a TUI-less
+    install too; it is the resume after it that cannot work, and a
+    remembered install is not attempted -- the landing names the seeded
+    session so the user can keep talking to it."""
+    monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
+    monkeypatch.setattr(sessions, "session_handoff_details",
+                        lambda tool, sid: (str(tmp_path), "# export\n\nthe body"))
+    monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
+    zcode.zcode_remember_tui_missing()
+    calls = []
+    monkeypatch.setattr(sessions.subprocess, "call",
+                        lambda argv, **kw: calls.append(argv) or 0)
+    monkeypatch.setattr(sessions, "zcode_newest_session_since",
+                        lambda started: "sess_fresh04-0000")
+
+    with pytest.raises(SystemExit) as exc_info:
+        sessions.perform_handoff("claude", "019abc-source", "zcode", [])
+
+    assert exc_info.value.code == 1
+    assert len(calls) == 1 and calls[0][:2] == ["zcode", "-p"]  # seeded, not resumed
+    assert "zcode --resume sess_fresh04-0000 -p" in capsys.readouterr().err
+
+
+# ---------- the no-TUI memo ----------
+
+def test_the_no_tui_memo_survives_a_reread(monkeypatch, tmp_path):
+    """Written once, read back as the same fact -- the whole point of the
+    memo is that the next cw process sees it too."""
+    zcode.zcode_remember_tui_missing()
+    assert zcode.zcode_tui_known_missing()
+
+
+def test_a_broken_or_absent_memo_reads_as_no_memo(monkeypatch, tmp_path):
+    """A truncated or hand-edited memo is indistinguishable from a missing
+    one, and reads as "not known": the TUI is attempted, which is what a
+    machine without the memo gets anyway."""
+    path = tmp_path / "memo.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(zcode, "ZCODE_TUI_MEMO", str(path))
+    assert not zcode.zcode_tui_known_missing()
+
+
+def test_the_memo_does_not_outlive_a_different_zcode(monkeypatch, tmp_path):
+    """Keyed by path, size and mtime: an upgraded ZCode is a different file
+    on PATH, so the memo stops applying on its own -- no expiry to reason
+    about, and an install that gains @zcode/tui is tried again."""
+    zcode.zcode_remember_tui_missing()
+    assert zcode.zcode_tui_known_missing()
+    monkeypatch.setattr(zcode, "zcode_exe_identity",
+                        lambda: {"path": "/fake/zcode", "size": 99, "mtime": 99})
+    assert not zcode.zcode_tui_known_missing()
+
+
+def test_the_signature_matcher_reads_both_module_spellings():
+    """ESM says "Cannot find package", CommonJS "Cannot find module" -- and
+    nothing else counts, so an unrelated crash never poisons the memo."""
+    assert zcode.zcode_stderr_says_no_tui(
+        "Error: Cannot find package '@zcode/tui' imported from /opt/ZCode/x.cjs\n")
+    assert zcode.zcode_stderr_says_no_tui("Cannot find module '@zcode/tui'")
+    assert not zcode.zcode_stderr_says_no_tui("Error: EACCES: permission denied")
+    assert not zcode.zcode_stderr_says_no_tui("")
 
 
 def test_resume_falls_back_to_the_deep_link_without_the_cli(monkeypatch, tmp_path, capsys):
@@ -519,7 +709,7 @@ def test_resume_relocation_seeds_a_fresh_zcode_session(monkeypatch, tmp_path):
     monkeypatch.chdir(workdir)
     one_session(tmp_path, cwd=str(workdir))
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
-    monkeypatch.setattr(sessions.subprocess, "call", lambda argv: 0)
+    monkeypatch.setattr(sessions.subprocess, "call", lambda argv, **kw: 0)
     monkeypatch.setattr(sessions, "zcode_newest_session_since",
                         lambda started: "sess_fresh02-0000")
     monkeypatch.setattr(sessions, "HANDOFF_DIR", str(tmp_path / "handoffs"))
@@ -527,7 +717,7 @@ def test_resume_relocation_seeds_a_fresh_zcode_session(monkeypatch, tmp_path):
     other.mkdir()
     calls = []
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: calls.append(argv) or 0)
+                        lambda argv, **kw: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", SID, "--cwd", str(other)])
 
@@ -544,7 +734,7 @@ def test_resume_by_prefix_resolves_through_the_store(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "zcode_cli_on_path", lambda: True)
     calls = []
     monkeypatch.setattr(sessions.subprocess, "call",
-                        lambda argv: calls.append(argv) or 0)
+                        lambda argv, **kw: calls.append(argv) or 0)
 
     sessions.cmd_resume(["zcode", "sess_90bd"])
 

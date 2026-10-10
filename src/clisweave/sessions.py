@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 
@@ -124,10 +125,13 @@ from .zcode import (
     zcode_last_message,
     zcode_light_records,
     zcode_newest_session_since,
+    zcode_remember_tui_missing,
     zcode_resolve,
     zcode_session_cwd,
     zcode_session_turns,
     zcode_snippet,
+    zcode_stderr_says_no_tui,
+    zcode_tui_known_missing,
     zcode_workspace_link,
 )
 
@@ -641,10 +645,19 @@ def perform_handoff(source_tool, source_id, target_tool, extra, forced_cwd=None,
             sys.exit(rc if rc > 0 else 1)
         sid = zcode_newest_session_since(started)
         if sid:
-            rc = _run_zcode_tui(["zcode", "--resume", sid, *extra])
-            if rc:
-                _zcode_tui_failure_hint(sid, rc)
-                sys.exit(rc)
+            if zcode_tui_known_missing():
+                # This install cannot open a TUI at all -- the seed run is
+                # what carried the context in, so the session exists and the
+                # landing says how to keep talking to it.
+                _zcode_tui_failure_hint(sid, remembered=True)
+                sys.exit(1)
+            rc, err = _run_zcode_tui(["zcode", "--resume", sid, *extra])
+            no_tui = zcode_stderr_says_no_tui(err)
+            if no_tui:
+                zcode_remember_tui_missing()
+            if rc or no_tui:
+                _zcode_tui_failure_hint(sid, rc or 1)
+                sys.exit(rc or 1)
             return
         print("cw handoff: could not determine the seeded zcode session -- continue "
               "manually with `zcode -c`", file=sys.stderr)
@@ -1560,27 +1573,64 @@ def resume_by_number(n, extra, forced_cwd=None):
 
 
 def _run_zcode_tui(argv):
-    """The zcode TUI in the foreground, its exit code returned.
+    """The zcode TUI in the foreground, returning (exit code, its stderr).
 
     Foreground rather than exec: some installs ship no @zcode/tui (the
     wrapper delegates to the desktop's core, which imports the TUI package
     only for TUI mode -- one machine checked), and a TUI start that dies
     should come back here for a usable hint instead of stranding the user
-    inside a node traceback with the wrapper gone."""
+    inside a node traceback with the wrapper gone.
+
+    stderr is captured through a temp file rather than inherited, because
+    what the child wrote there is how a no-TUI death is told apart from any
+    other failure -- and only that one is worth remembering (see
+    zcode_stderr_says_no_tui). It is echoed back once the child is gone, so
+    a successful interactive run shows whatever it had to say exactly as
+    before, just after it exits."""
     try:
-        return subprocess.call(argv)
+        with tempfile.TemporaryFile("wb+") as errfh:
+            rc = subprocess.call(argv, stderr=errfh)
+            errfh.seek(0)
+            err_text = errfh.read().decode("utf-8", "replace")
     except KeyboardInterrupt:
-        return 130
+        return 130, ""
     except FileNotFoundError:
         print("cw: 'zcode' not found on PATH", file=sys.stderr)
-        return 127
+        return 127, ""
+    if err_text.strip():
+        sys.stderr.write(err_text if err_text.endswith("\n") else err_text + "\n")
+        sys.stderr.flush()
+    return rc, err_text
 
 
-def _zcode_tui_failure_hint(full_id, rc):
-    print(f"cw resume: the zcode TUI exited with status {rc} -- an install without "
-          "@zcode/tui has no TUI. Resume in the desktop app's task list, or continue "
-          f"headlessly with `zcode --resume {full_id} -p \"<next instruction>\"`",
-          file=sys.stderr)
+def _zcode_tui_failure_hint(full_id, rc=None, remembered=False):
+    """Where to go when the TUI did not open: the headless continuation --
+    which on a TUI-less install is the only interactive-ish route there is
+    -- or the desktop app's task list."""
+    if remembered:
+        lead = ("cw resume: this zcode install has no TUI -- its @zcode/tui package "
+                "is missing (remembered from an earlier attempt, so the TUI was not "
+                "tried again)")
+    else:
+        lead = (f"cw resume: the zcode TUI exited with status {rc} -- an install "
+                "without @zcode/tui has no TUI")
+    print(f"{lead}. Continue headlessly with `zcode --resume {full_id} -p \"<next "
+          f"instruction>\"` (through cw: `cw resume zcode {full_id} \"<next "
+          "instruction>\"`), or resume in the desktop app's task list.", file=sys.stderr)
+
+
+def _zcode_next_instruction(extra):
+    """Words after the session id, read as the next instruction -- or None
+    when they are flags, which still belong to the TUI invocation.
+
+    The TUI takes no positional prompt (`zcode --resume <id> some words` is
+    an unknown command to commander), while headless mode resumes a session
+    by id and answers one prompt in the same run -- verified 2026-10-10:
+    the follow-up turn appended to the same session row, model context
+    intact. So words are only ever an instruction, and flags stay flags."""
+    if not extra or any(word.startswith("-") for word in extra):
+        return None
+    return " ".join(extra).strip() or None
 
 
 def cmd_resume(args):
@@ -1608,6 +1658,15 @@ def cmd_resume(args):
             exec_or_die(["codebuddy", "-r"])
         elif tool == "zcode":
             if zcode_cli_on_path():
+                if zcode_tui_known_missing():
+                    # No picker to open and no TUI to open it in: say where
+                    # the ids come from and how to keep talking without one.
+                    print("cw resume: this zcode install has no TUI -- run "
+                          "`cw sessions --tool zcode`, pick a row, and continue it "
+                          "headlessly with `cw resume <N> \"<next instruction>\"`; the "
+                          "desktop app's task list is the interactive route",
+                          file=sys.stderr)
+                    sys.exit(1)
                 # The CLI's TUI, rooted in the current directory -- its
                 # /resume picker lists this directory's sessions, which is
                 # as close to "the tool's own picker" as zcode gets.
@@ -1682,14 +1741,38 @@ def cmd_resume(args):
         exec_or_die(["codebuddy", "-r", full_id, *extra])
     elif tool == "zcode":
         if zcode_cli_on_path():
+            instruction = _zcode_next_instruction(extra)
+            if instruction:
+                # Words after the id are what to say next, and the CLI
+                # answers them inside the same session headlessly -- the one
+                # route into a stored conversation that works with or
+                # without a TUI, so it goes straight there.
+                print("cw resume: continuing this zcode session headlessly with "
+                      "your instruction", file=sys.stderr)
+                try:
+                    sys.exit(subprocess.call(
+                        ["zcode", "--resume", full_id, "-p", instruction]))
+                except KeyboardInterrupt:
+                    sys.exit(130)
+                except FileNotFoundError:
+                    print("cw: 'zcode' not found on PATH", file=sys.stderr)
+                    sys.exit(127)
+            if zcode_tui_known_missing():
+                # Attempting it anyway only repeats a start that already
+                # proved it cannot work on this install.
+                _zcode_tui_failure_hint(full_id, remembered=True)
+                sys.exit(1)
             # A real resume: the CLI reopens the session by id (verified
             # headlessly, same and cross directory), interactively in the
             # TUI -- unless this install bundles no TUI, which lands back
             # here with a hint instead.
-            rc = _run_zcode_tui(["zcode", "--resume", full_id, *extra])
-            if rc:
-                _zcode_tui_failure_hint(full_id, rc)
-                sys.exit(rc)
+            rc, err = _run_zcode_tui(["zcode", "--resume", full_id, *extra])
+            no_tui = zcode_stderr_says_no_tui(err)
+            if no_tui:
+                zcode_remember_tui_missing()
+            if rc or no_tui:
+                _zcode_tui_failure_hint(full_id, rc or 1)
+                sys.exit(rc or 1)
             return
         # No CLI -- the desktop deep link is the closest route in (cb's
         # desktop handler makes the same compromise). Popen, not exec: the

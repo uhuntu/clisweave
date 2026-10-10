@@ -19,6 +19,14 @@ persists a headless run that can then be resumed -- the same two-step a
 kimi handoff needs. Only the desktop falls back to the workspace deep
 link, which opens the right workspace but no particular session.
 
+A CLI that bundles no @zcode/tui has no interactive TUI either -- it opens
+one only to die inside node on the unresolvable package. That is a
+per-install fact worth keeping: zcode_tui_known_missing remembers it,
+keyed by the executable's identity so a ZCode that gains the package is
+tried again, and the resume then lands on the headless continuation
+(`zcode --resume <id> -p "<instruction>"`, which continues the same
+session) instead of repeating the doomed start.
+
 The store belongs to a live app, so every connection is read-only (`mode=ro`
 -- the same contract cb.py's desktop collector uses) and a missing file or
 table reads as an empty store rather than an error. Rows still being written
@@ -391,6 +399,85 @@ def zcode_cli_on_path():
             return fh.read(2) == b"#!"
     except OSError:
         return False
+
+
+# An install that ships no @zcode/tui has no TUI, and every attempt to open
+# one dies the same death -- so the fact is remembered per install rather
+# than re-learned on every resume. Keyed by the executable's identity (path,
+# size, mtime), which is what invalidates the memo on its own: a ZCode that
+# later bundles the package is a different file on PATH. Lives in clisweave's
+# cache dir beside the listing cache, and a missing or unreadable memo simply
+# reads as "not known" -- the memo must never be the reason a resume fails.
+ZCODE_TUI_MEMO = os.path.join(common.HOME, ".cache", "clisweave", "zcode-no-tui.json")
+
+# How the CLI reports the missing package: a dynamic import of a bare
+# specifier that resolves to nothing. Both spellings are matched -- the ESM
+# "Cannot find package" the wrapper-delegated install produces, and the
+# CommonJS "Cannot find module" a require would produce.
+TUI_MISSING_MARKERS = (
+    "Cannot find package '@zcode/tui'",
+    "Cannot find module '@zcode/tui'",
+)
+
+
+def zcode_exe_identity():
+    """What makes the `zcode` on PATH the install it is: path, size, mtime.
+    None when there is no zcode on PATH, or it cannot be stat'ed."""
+    exe = shutil.which("zcode")
+    if not exe:
+        return None
+    try:
+        st = os.stat(exe)
+    except OSError:
+        return None
+    return {"path": exe, "size": st.st_size, "mtime": int(st.st_mtime)}
+
+
+def _read_tui_memo():
+    try:
+        with open(ZCODE_TUI_MEMO, encoding="utf-8") as fh:
+            memo = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return memo if isinstance(memo, dict) else {}
+
+
+def _write_tui_memo(memo):
+    try:
+        os.makedirs(os.path.dirname(ZCODE_TUI_MEMO), exist_ok=True)
+        tmp = f"{ZCODE_TUI_MEMO}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(memo, fh)
+        os.replace(tmp, ZCODE_TUI_MEMO)
+    except OSError:
+        pass  # best-effort -- the TUI is simply attempted again next time
+
+
+def zcode_tui_known_missing():
+    """True when a TUI start on THIS install already died on the missing
+    @zcode/tui package. The caller then skips the attempt and lands on the
+    headless continuation instead of repeating a start that cannot work."""
+    identity = zcode_exe_identity()
+    if identity is None:
+        return False
+    memo = _read_tui_memo()
+    return memo.get("no_tui") is True and memo.get("identity") == identity
+
+
+def zcode_remember_tui_missing():
+    """Record that this install has no TUI. Best-effort: an unwritable cache
+    directory costs the memo, never the resume."""
+    identity = zcode_exe_identity()
+    if identity is None:
+        return
+    _write_tui_memo({"no_tui": True, "identity": identity})
+
+
+def zcode_stderr_says_no_tui(text):
+    """True when a failed TUI start's output names the missing @zcode/tui
+    package as the cause -- the one TUI death worth remembering, since it
+    repeats identically on every attempt while any other failure might not."""
+    return any(marker in text for marker in TUI_MISSING_MARKERS)
 
 
 def zcode_newest_session_since(started):
